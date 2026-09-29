@@ -16,6 +16,18 @@ const nextConfig: NextConfig = {
   output: "export",
 
   /*
+   * `next dev` and `next build` both write to `.next`, and the build starts by
+   * deleting it -- which yanks the files out from under a running dev server
+   * and, in this sandbox, trips the bulk-delete guard. Set NEXT_DIST_DIR to
+   * build the export into its own directory so the two can run side by side:
+   *
+   *   NEXT_DIST_DIR=.next-export NEXT_PUBLIC_API_URL=... npx next build
+   *
+   * Both still emit the static export to `out/`.
+   */
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+
+  /*
    * `next/image` optimisation needs a server, which a static export does not
    * have. The app uses plain <img> tags everywhere, so this only guards
    * against a future <Image> silently breaking the export.
