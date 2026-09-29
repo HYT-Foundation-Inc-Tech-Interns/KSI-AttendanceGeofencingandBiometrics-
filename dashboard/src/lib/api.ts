@@ -156,10 +156,37 @@ export class ApiClient {
     return this.request<any>(`/employees/${id}`, { token });
   }
 
-  async createEmployee(token: string, data: any) {
+  /**
+   * Create an employee record.
+   *
+   * No login is created and no email is sent. Provisioning the account is a
+   * separate step — see issueEmployeeCredentials.
+   */
+  async createEmployee(token: string, data: any): Promise<any> {
     return this.request<any>('/employees', {
       method: 'POST',
       body: JSON.stringify(data),
+      token,
+    });
+  }
+
+  /**
+   * Create or reset an employee's login, and email them the password.
+   *
+   * Provisions the account when the employee has none, so this is both the
+   * normal first-time step and the recovery path for a lost password.
+   * Administrators only — the server rejects anyone else.
+   */
+  async issueEmployeeCredentials(token: string, id: string) {
+    return this.request<{
+      email: string;
+      role: string;
+      temporaryPassword?: string;
+      emailSent: boolean;
+      emailError?: string;
+      created: boolean;
+    }>(`/employees/${id}/credentials`, {
+      method: 'POST',
       token,
     });
   }

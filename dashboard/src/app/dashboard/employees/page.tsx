@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/table';
 import { Select } from '@/components/ui/select';
 import { StatCard } from '@/components/ui/stat-card';
-import { Users, UserCheck, UserMinus, UserX } from 'lucide-react';
+import { Users, UserCheck, UserMinus, UserX, Copy, Check, AlertTriangle, Mail } from 'lucide-react';
 import { api } from '@/lib/api';
 
 interface Employee {
@@ -24,7 +24,10 @@ interface Employee {
   fullName: string;
   email: string;
   phone: string;
-  status: 'active' | 'inactive' | 'suspended';
+  // Mirrors EmployeeStatus in backend/src/database/entities/employee.entity.ts.
+  // 'inactive' is NOT a member -- offering it made the create form fail with a
+  // 400 from @IsEnum, and made the "Inactive" tile always read zero.
+  status: 'active' | 'suspended' | 'offboarded';
   hiredAt: string;
   offboardedAt: string | null;
   site: {
@@ -41,6 +44,23 @@ interface Site {
   address: string;
 }
 
+/**
+ * Credentials shown once, immediately after they are issued.
+ *
+ * The password is returned only by the credentials call and is never stored in
+ * retrievable form, so this panel is the admin's single chance to record it.
+ * Creating an employee does not produce one — credentials are issued
+ * deliberately, per employee, from the row action.
+ */
+interface IssuedAccount {
+  employeeName: string;
+  email: string;
+  temporaryPassword?: string;
+  emailSent: boolean;
+  emailError?: string;
+  created: boolean;
+}
+
 export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -50,6 +70,8 @@ export default function EmployeesPage() {
   const [siteFilter, setSiteFilter] = useState<string>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [issuedAccount, setIssuedAccount] = useState<IssuedAccount | null>(null);
+  const [notice, setNotice] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [formData, setFormData] = useState({
     employeeCode: '',
@@ -112,13 +134,53 @@ export default function EmployeesPage() {
       if (!payload.siteId) delete payload.siteId;
       if (!payload.hiredAt) delete payload.hiredAt;
 
-      await api.createEmployee(token, payload);
+      const created = await api.createEmployee(token, payload);
       setShowAddModal(false);
       resetForm();
       loadData();
+
+      // No credentials come back any more: creating an employee no longer
+      // provisions a login. Point the admin at the next step rather than
+      // leaving them to wonder where the password went.
+      setNotice(
+        `${created?.fullName ?? payload.fullName} was added. ` +
+          `Click "Generate Account" on their row to create their login and email the password.`
+      );
     } catch (error: any) {
       console.error('Failed to create employee:', error);
       alert(`Failed to create employee: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleIssueCredentials = async (employee: Employee) => {
+    if (
+      !confirm(
+        `Generate login credentials for ${employee.fullName}?\n\n` +
+          `This creates their account if they do not have one, emails a temporary ` +
+          `password to ${employee.email ?? 'their address'}, and invalidates any ` +
+          `password they currently use.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('accessToken');
+      if (!token) return;
+
+      setNotice('');
+      const result = await api.issueEmployeeCredentials(token, employee.id);
+      setIssuedAccount({
+        employeeName: employee.fullName,
+        email: result?.email ?? employee.email,
+        temporaryPassword: result?.temporaryPassword,
+        emailSent: result?.emailSent ?? false,
+        emailError: result?.emailError,
+        created: result?.created ?? false,
+      });
+    } catch (error: any) {
+      console.error('Failed to issue credentials:', error);
+      alert(`Failed to issue credentials: ${error.message || 'Unknown error'}`);
     }
   };
 
@@ -203,7 +265,7 @@ export default function EmployeesPage() {
     switch (status) {
       case 'active':
         return 'bg-brand-100 text-brand-800';
-      case 'inactive':
+      case 'offboarded':
         return 'bg-silver-100 text-silver-800';
       case 'suspended':
         return 'bg-critical-100 text-critical-600';
@@ -234,6 +296,27 @@ export default function EmployeesPage() {
         </Button>
       </div>
 
+      {/* Created-but-not-yet-provisioned hint. Creating an employee no longer
+          issues a login, so the admin needs to be told what the next step is
+          rather than being left to hunt for a password that was never made. */}
+      {notice && (
+        <div
+          role="status"
+          className="flex items-start gap-2 p-3 text-sm text-brand-800 bg-brand-50 border border-brand-200 rounded-lg"
+        >
+          <Check className="w-4 h-4 mt-0.5 shrink-0" />
+          <span className="flex-1">{notice}</span>
+          <button
+            type="button"
+            onClick={() => setNotice('')}
+            className="text-brand-700 hover:text-brand-900 font-medium"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard label="Total Employees" value={employees.length} icon={Users} />
@@ -243,8 +326,8 @@ export default function EmployeesPage() {
           icon={UserCheck}
         />
         <StatCard
-          label="Inactive"
-          value={employees.filter(e => e.status === 'inactive').length}
+          label="Offboarded"
+          value={employees.filter(e => e.status === 'offboarded').length}
           icon={UserMinus}
         />
         {/* Critical only when non-zero — see StatCard. */}
@@ -276,8 +359,8 @@ export default function EmployeesPage() {
               <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
                 <option value="all">All Statuses</option>
                 <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
                 <option value="suspended">Suspended</option>
+                <option value="offboarded">Offboarded</option>
               </Select>
             </div>
             <div className="space-y-2">
@@ -341,6 +424,14 @@ export default function EmployeesPage() {
                         onClick={() => openEditModal(employee)}
                       >
                         Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleIssueCredentials(employee)}
+                        title="Create or reset this employee's login and email them the password"
+                      >
+                        Generate Account
                       </Button>
                       <Button
                         variant="critical"
@@ -446,8 +537,8 @@ export default function EmployeesPage() {
                     onChange={(e) => setFormData({ ...formData, status: e.target.value })}
                   >
                     <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
                     <option value="suspended">Suspended</option>
+                    <option value="offboarded">Offboarded</option>
                   </Select>
                 </div>
                 <div className="flex justify-end gap-2 pt-4">
@@ -543,8 +634,8 @@ export default function EmployeesPage() {
                     onChange={(e) => setFormData({ ...formData, status: e.target.value })}
                   >
                     <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
                     <option value="suspended">Suspended</option>
+                    <option value="offboarded">Offboarded</option>
                   </Select>
                 </div>
                 <div className="flex justify-end gap-2 pt-4">
@@ -566,6 +657,140 @@ export default function EmployeesPage() {
           </Card>
         </div>
       )}
+
+      {/* Issued credentials.
+          Shown once and only once: the password is stored as a bcrypt hash and
+          cannot be read back, so if the admin closes this without recording it
+          the only remedy is Generate Account, which issues a fresh one. */}
+      {issuedAccount && (
+        <div className="fixed inset-0 bg-silver-950/40 backdrop-blur-sm flex items-center justify-center z-50">
+          <Card className="w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <CardHeader>
+              <CardTitle>
+                {issuedAccount.created ? 'Account Created' : 'New Password Issued'}
+              </CardTitle>
+              <CardDescription>
+                Login details for {issuedAccount.employeeName}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Email</label>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 px-3 py-2 bg-silver-100 rounded-md text-sm break-all">
+                    {issuedAccount.email}
+                  </code>
+                  <CopyButton value={issuedAccount.email} label="Copy email" />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Temporary Password</label>
+                {issuedAccount.temporaryPassword ? (
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 px-3 py-2 bg-silver-100 rounded-md text-sm font-semibold tracking-wide break-all">
+                      {issuedAccount.temporaryPassword}
+                    </code>
+                    <CopyButton
+                      value={issuedAccount.temporaryPassword}
+                      label="Copy password"
+                    />
+                  </div>
+                ) : (
+                  <p className="text-sm text-silver-800">
+                    The server did not return a password for this action.
+                  </p>
+                )}
+              </div>
+
+              {/* Delivery status. When SMTP is not configured the password is
+                  only ever visible here, so this cannot be a quiet footnote. */}
+              {issuedAccount.emailSent ? (
+                <div className="flex items-start gap-2 p-3 rounded-md bg-brand-50 text-brand-800 text-sm">
+                  <Mail className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>
+                    These details were also emailed to {issuedAccount.email}.
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-start gap-2 p-3 rounded-md bg-warning-50 text-warning-700 text-sm">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>
+                    <strong>Not emailed.</strong>{' '}
+                    {issuedAccount.emailError ||
+                      'Email delivery is not configured.'}{' '}
+                    Record the password above and pass it on yourself — it will
+                    not be shown again.
+                  </span>
+                </div>
+              )}
+
+              <p className="text-sm text-silver-800">
+                The employee signs in at <strong>/checkin</strong> on their
+                phone using this email and password.
+              </p>
+
+              <div className="flex justify-end pt-2">
+                <Button onClick={() => setIssuedAccount(null)}>
+                  I&apos;ve recorded it
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
+  );
+}
+
+/**
+ * Copy-to-clipboard with a confirmed state.
+ *
+ * navigator.clipboard is undefined outside a secure context, and this
+ * dashboard is also used over plain http on a LAN during development, so the
+ * textarea/execCommand path is kept as a fallback rather than left to throw.
+ */
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('Copy failed:', error);
+    }
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={copy}
+      aria-label={label}
+    >
+      {copied ? (
+        <>
+          <Check className="w-4 h-4 mr-1" /> Copied
+        </>
+      ) : (
+        <>
+          <Copy className="w-4 h-4 mr-1" /> Copy
+        </>
+      )}
+    </Button>
   );
 }
