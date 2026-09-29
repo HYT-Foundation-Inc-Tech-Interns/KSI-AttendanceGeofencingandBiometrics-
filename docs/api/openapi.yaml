@@ -1,0 +1,879 @@
+openapi: 3.0.3
+info:
+  title: Klassic Field Attendance System API
+  version: 1.0.0
+  description: |
+    GPS-geofenced and biometric (facial recognition) mobile timekeeping system
+    for field employees across multiple client sites in the Philippines.
+    
+    ## Authentication
+    All endpoints (except /auth/* and /health) require a valid JWT access token
+    in the Authorization header: `Bearer <token>`
+    
+    ## Rate Limiting
+    - Auth endpoints: 5 requests per minute per IP
+    - Attendance endpoints: 100 requests per minute per user
+    - Sync endpoint: 20 requests per minute per user
+    
+  contact:
+    name: Klassic API Support
+    email: api@klassic.ph
+
+servers:
+  - url: https://api.klassic.ph/v1
+    description: Production
+  - url: https://staging-api.klassic.ph/v1
+    description: Staging
+  - url: http://localhost:3000/v1
+    description: Local Development
+
+tags:
+  - name: Auth
+    description: Authentication and authorization
+  - name: Employees
+    description: Employee management
+  - name: Sites
+    description: Site and geofence management
+  - name: Attendance
+    description: Check-in/check-out operations
+  - name: Sync
+    description: Offline event synchronization
+  - name: Admin
+    description: Administrative overrides and controls
+  - name: Payroll
+    description: Payroll export and reconciliation
+  - name: Health
+    description: System health checks
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    
+    ServiceKey:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: Service-to-service authentication key
+
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+    
+    Timestamp:
+      type: string
+      format: date-time
+      example: "2026-09-11T14:30:00+08:00"
+    
+    Date:
+      type: string
+      format: date
+      example: "2026-09-11"
+    
+    GeoPoint:
+      type: object
+      required:
+        - latitude
+        - longitude
+      properties:
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 14.5964
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: 120.9842
+    
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: "VALIDATION_ERROR"
+        message:
+          type: string
+          example: "Invalid input parameters"
+        details:
+          type: object
+          additionalProperties: true
+
+    # Auth Models
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: "juan.delacruz@klassic.ph"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: "SecurePass123!"
+    
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        refresh_token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        user:
+          $ref: '#/components/schemas/UserProfile'
+    
+    RefreshTokenRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+    
+    UserProfile:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        organization_id:
+          $ref: '#/components/schemas/UUID'
+        email:
+          type: string
+          format: email
+        full_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, hr, supervisor, employee]
+        employee_id:
+          $ref: '#/components/schemas/UUID'
+    
+    # Employee Models
+    Employee:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        organization_id:
+          $ref: '#/components/schemas/UUID'
+        site_id:
+          $ref: '#/components/schemas/UUID'
+        employee_code:
+          type: string
+          example: "EMP001"
+        full_name:
+          type: string
+          example: "Juan Dela Cruz"
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        status:
+          type: string
+          enum: [active, suspended, offboarded]
+        hired_at:
+          $ref: '#/components/schemas/Date'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    
+    EnrollFaceRequest:
+      type: object
+      required:
+        - employee_id
+        - device_id
+        - face_embedding
+      properties:
+        employee_id:
+          $ref: '#/components/schemas/UUID'
+        device_id:
+          type: string
+          description: Unique device identifier
+          example: "DEVICE-12345-ABCDE"
+        face_embedding:
+          type: string
+          format: byte
+          description: Base64-encoded face embedding vector (NOT raw photo)
+        device_model:
+          type: string
+          example: "Samsung Galaxy S21"
+        device_os:
+          type: string
+          example: "Android 13"
+        app_version:
+          type: string
+          example: "1.0.0"
+    
+    EnrollFaceResponse:
+      type: object
+      properties:
+        enrollment_id:
+          $ref: '#/components/schemas/UUID'
+        employee_id:
+          $ref: '#/components/schemas/UUID'
+        enrolled_at:
+          $ref: '#/components/schemas/Timestamp'
+    
+    # Site Models
+    Site:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        organization_id:
+          $ref: '#/components/schemas/UUID'
+        name:
+          type: string
+          example: "SM Manila Office"
+        address:
+          type: string
+        geofence_center:
+          $ref: '#/components/schemas/GeoPoint'
+        geofence_radius_m:
+          type: integer
+          description: Radius in meters for circular geofence
+          example: 100
+        timezone:
+          type: string
+          example: "Asia/Manila"
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+    
+    # Attendance Models
+    CheckInRequest:
+      type: object
+      required:
+        - client_event_id
+        - site_id
+        - latitude
+        - longitude
+        - liveness_score
+        - face_embedding
+        - device_id
+      properties:
+        client_event_id:
+          $ref: '#/components/schemas/UUID'
+          description: Client-generated UUID for idempotency
+        site_id:
+          $ref: '#/components/schemas/UUID'
+        latitude:
+          type: number
+          format: double
+          example: 14.5964
+        longitude:
+          type: number
+          format: double
+          example: 120.9842
+        gps_accuracy_meters:
+          type: number
+          format: float
+          example: 10.5
+        is_mock_location:
+          type: boolean
+          default: false
+        liveness_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Liveness detection confidence (0-1)
+          example: 0.95
+        face_embedding:
+          type: string
+          format: byte
+          description: Base64-encoded face embedding
+        device_id:
+          type: string
+        app_version:
+          type: string
+    
+    CheckOutRequest:
+      type: object
+      required:
+        - client_event_id
+        - site_id
+        - latitude
+        - longitude
+        - liveness_score
+        - face_embedding
+        - device_id
+      properties:
+        client_event_id:
+          $ref: '#/components/schemas/UUID'
+        site_id:
+          $ref: '#/components/schemas/UUID'
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        gps_accuracy_meters:
+          type: number
+          format: float
+        is_mock_location:
+          type: boolean
+        liveness_score:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        face_embedding:
+          type: string
+          format: byte
+        device_id:
+          type: string
+        app_version:
+          type: string
+    
+    AttendanceResponse:
+      type: object
+      properties:
+        event_id:
+          $ref: '#/components/schemas/UUID'
+        status:
+          type: string
+          enum: [pending, verified, flagged, rejected]
+        server_timestamp:
+          $ref: '#/components/schemas/Timestamp'
+        within_geofence:
+          type: boolean
+        match_verified:
+          type: boolean
+        message:
+          type: string
+          example: "Check-in successful"
+    
+    AttendanceEvent:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        employee_id:
+          $ref: '#/components/schemas/UUID'
+        site_id:
+          $ref: '#/components/schemas/UUID'
+        event_type:
+          type: string
+          enum: [check_in, check_out]
+        device_timestamp:
+          $ref: '#/components/schemas/Timestamp'
+        server_timestamp:
+          $ref: '#/components/schemas/Timestamp'
+        gps_point:
+          $ref: '#/components/schemas/GeoPoint'
+        liveness_score:
+          type: number
+          format: float
+        match_score:
+          type: number
+          format: float
+        status:
+          type: string
+          enum: [pending, verified, flagged, rejected, exported]
+        flag_reason:
+          type: string
+        created_offline:
+          type: boolean
+    
+    # Sync Models
+    SyncEventPayload:
+      type: object
+      required:
+        - client_event_id
+        - employee_id
+        - site_id
+        - event_type
+        - device_timestamp
+        - latitude
+        - longitude
+        - liveness_score
+        - face_embedding
+        - device_id
+      properties:
+        client_event_id:
+          $ref: '#/components/schemas/UUID'
+        employee_id:
+          $ref: '#/components/schemas/UUID'
+        site_id:
+          $ref: '#/components/schemas/UUID'
+        event_type:
+          type: string
+          enum: [check_in, check_out]
+        device_timestamp:
+          $ref: '#/components/schemas/Timestamp'
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        gps_accuracy_meters:
+          type: number
+          format: float
+        is_mock_location:
+          type: boolean
+        liveness_score:
+          type: number
+          format: float
+        face_embedding:
+          type: string
+          format: byte
+        device_id:
+          type: string
+        app_version:
+          type: string
+        created_offline:
+          type: boolean
+    
+    SyncRequest:
+      type: object
+      required:
+        - events
+        - signature
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncEventPayload'
+          maxItems: 100
+        signature:
+          type: string
+          description: HMAC-SHA256 signature of events array
+    
+    SyncResponse:
+      type: object
+      properties:
+        synced_count:
+          type: integer
+        failed_count:
+          type: integer
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              client_event_id:
+                $ref: '#/components/schemas/UUID'
+              status:
+                type: string
+                enum: [synced, duplicate, failed]
+              error:
+                type: string
+    
+    # Payroll Models
+    PayrollRecord:
+      type: object
+      properties:
+        employee_id:
+          $ref: '#/components/schemas/UUID'
+        employee_code:
+          type: string
+        full_name:
+          type: string
+        site_id:
+          $ref: '#/components/schemas/UUID'
+        site_name:
+          type: string
+        date:
+          $ref: '#/components/schemas/Date'
+        check_in_time:
+          $ref: '#/components/schemas/Timestamp'
+        check_out_time:
+          $ref: '#/components/schemas/Timestamp'
+        worked_hours:
+          type: number
+          format: float
+        status:
+          type: string
+        flagged:
+          type: boolean
+        flag_reason:
+          type: string
+    
+    PayrollExportResponse:
+      type: object
+      properties:
+        export_id:
+          $ref: '#/components/schemas/UUID'
+        organization_id:
+          $ref: '#/components/schemas/UUID'
+        date_range_start:
+          $ref: '#/components/schemas/Date'
+        date_range_end:
+          $ref: '#/components/schemas/Date'
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/PayrollRecord'
+        total_records:
+          type: integer
+        exported_at:
+          $ref: '#/components/schemas/Timestamp'
+    
+    # Health Check
+    HealthCheckResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        timestamp:
+          $ref: '#/components/schemas/Timestamp'
+        version:
+          type: string
+        services:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [up, down]
+            redis:
+              type: string
+              enum: [up, down]
+            face_matching_api:
+              type: string
+              enum: [up, down]
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Check API and service health status
+      responses:
+        '200':
+          description: Service is operational
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheckResponse'
+  
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Employee/HR login
+      description: Authenticate and receive access + refresh tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit exceeded
+  
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh access token
+      description: Rotate access token using refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid refresh token
+  
+  /employees/{employeeId}/enroll-face:
+    post:
+      tags:
+        - Employees
+      summary: Enroll employee biometrics
+      description: One-time biometric enrollment supervised by HR
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: employeeId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrollFaceRequest'
+      responses:
+        '201':
+          description: Enrollment successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollFaceResponse'
+        '400':
+          description: Invalid enrollment data
+        '403':
+          description: Insufficient permissions (requires HR/Supervisor role)
+        '409':
+          description: Employee already enrolled on this device
+  
+  /sites/{siteId}/geofence:
+    get:
+      tags:
+        - Sites
+      summary: Get site geofence configuration
+      description: Fetch geofence for client-side UX (server still re-validates)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        '200':
+          description: Geofence data retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Site'
+        '404':
+          description: Site not found
+  
+  /attendance/check-in:
+    post:
+      tags:
+        - Attendance
+      summary: Real-time check-in
+      description: Submit check-in event (online mode)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckInRequest'
+      responses:
+        '200':
+          description: Check-in processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceResponse'
+        '400':
+          description: Invalid check-in data
+        '403':
+          description: Outside geofence or biometric verification failed
+        '409':
+          description: Duplicate check-in (idempotency key already exists)
+  
+  /attendance/check-out:
+    post:
+      tags:
+        - Attendance
+      summary: Real-time check-out
+      description: Submit check-out event (online mode)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckOutRequest'
+      responses:
+        '200':
+          description: Check-out processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttendanceResponse'
+        '400':
+          description: Invalid check-out data
+        '403':
+          description: Outside geofence or biometric verification failed
+        '409':
+          description: Duplicate check-out
+  
+  /attendance/sync:
+    post:
+      tags:
+        - Sync
+      summary: Batch sync offline events
+      description: Upload queued attendance events created offline
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncRequest'
+      responses:
+        '200':
+          description: Sync completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        '400':
+          description: Invalid signature or malformed events
+        '429':
+          description: Rate limit exceeded
+  
+  /attendance/history:
+    get:
+      tags:
+        - Attendance
+      summary: Get attendance history
+      description: Retrieve attendance log for employee
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: employee_id
+          in: query
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: start_date
+          in: query
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: end_date
+          in: query
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Attendance history retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AttendanceEvent'
+                  total:
+                    type: integer
+  
+  /admin/attendance/{eventId}/override:
+    post:
+      tags:
+        - Admin
+      summary: Manual attendance override
+      description: Supervisor/HR override attendance status (always audited)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - new_status
+                - notes
+              properties:
+                new_status:
+                  type: string
+                  enum: [verified, flagged, rejected]
+                notes:
+                  type: string
+                  minLength: 10
+      responses:
+        '200':
+          description: Override applied
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Event not found
+  
+  /payroll/export:
+    get:
+      tags:
+        - Payroll
+      summary: Export reconciled attendance for payroll
+      description: Pull verified attendance records for payroll system
+      security:
+        - ServiceKey: []
+      parameters:
+        - name: organization_id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - name: start_date
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Date'
+        - name: end_date
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Date'
+      responses:
+        '200':
+          description: Payroll data exported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayrollExportResponse'
+        '401':
+          description: Invalid service key
+        '400':
+          description: Invalid date range

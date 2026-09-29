@@ -1,0 +1,24 @@
+/* Global Label Styling - Make all labels dark and visible */
+label {
+  @apply text-sm font-semibold text-gray-900;
+}
+
+/* Ensure all form labels are visible */
+.text-sm.font-medium {
+  @apply text-gray-900 font-semibold;
+}
+
+/* Fix any remaining light text */
+.text-muted-foreground {
+  @apply text-gray-700;
+}
+
+/* Page titles should be bold and clear */
+h1, h2, h3 {
+  @apply text-gray-900;
+}
+
+/* Stat numbers should be bold and colored */
+.stat-number {
+  @apply font-bold text-3xl;
+}

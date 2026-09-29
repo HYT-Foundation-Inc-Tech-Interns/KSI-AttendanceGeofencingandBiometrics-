@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/*
+ * Klassic brand tokens.
+ *
+ * The palette is not invented — it was extracted from public/klassiclogo.png by
+ * pixel sampling. The logo contains exactly four things: a deep forest green
+ * wordmark (#285709), a mid-green swoosh (#519B24 / #68A626), a lime swoosh tip
+ * (#B7D334), and a silver gear ramp (#858585 .. #E6E5E4). Everything below is
+ * built from those anchors; nothing else is added.
+ *
+ * The comment on each anchor records its measured WCAG contrast against white,
+ * because that is what decides where the colour may be used:
+ *
+ *   brand-800  #285709   8.55:1   body text, headings, primary ink
+ *   brand-600  #519B24   3.46:1   icons, marks, large text — NOT small body text
+ *   lime-400   #B7D334   1.70:1   dark surfaces only (5.04:1 on brand-800)
+ *   silver-800 #6B6A6A   5.33:1   muted text
+ *   silver-700 #858585   3.69:1   icons and chrome — the non-text 3:1 floor
+ *   silver-500 #A8A7A7   2.38:1   borders and dividers — never text, never icons
+ *   critical   #A33A2E   6.56:1   flagged / rejected
+ *   warning    #8A6116   5.52:1   pending
+ *
+ * Two rules follow and are enforced throughout the app:
+ *   1. Lime is a DARK-SURFACE colour. It appears on the sidebar and on dark
+ *      green fills, never as text on white.
+ *   2. Status is never colour-alone. Every status badge pairs an icon with a
+ *      label; that pairing is the accessibility mitigation.
+ *
+ * On the two functional colours — a recorded trade-off, not an oversight:
+ *
+ *   `warning` #8A6116 and `critical` #A33A2E are close in OKLab (ΔE 10.8 in
+ *   normal vision, 3.1 under deuteranopia). Running the dataviz palette
+ *   validator over them reports a CVD-separation FAIL. That check is scoped to
+ *   *categorical* palettes, where hue alone carries identity; these are status
+ *   colours, which the same tool's scope note directs to WCAG text contrast —
+ *   measured above at 5.52:1 and 6.56:1 on white (5.16:1 and 5.91:1 on their own
+ *   tints). Rule 2 is what actually disambiguates them.
+ *
+ *   Lifting the amber into the validator's passing band needs roughly #887200,
+ *   which drops it to 4.72:1 on white and 4.38:1 on its own #FBF7ED tint — below
+ *   WCAG AA on the surface it is really drawn on. Worse legibility for a metric
+ *   that does not govern status colour is the wrong trade, so the amber stays.
+ */
+
+@theme {
+  /* Brand green — the wordmark and swoosh. */
+  --color-brand-50: #f2f7ec;
+  --color-brand-100: #e3eeda;
+  --color-brand-200: #c7ddb6;
+  --color-brand-300: #a3c78b;
+  --color-brand-400: #7bb258;
+  --color-brand-500: #68a626;
+  --color-brand-600: #519b24; /* logo swoosh — 3.46:1 */
+  --color-brand-700: #3d7a17;
+  --color-brand-800: #285709; /* logo wordmark — 8.55:1 */
+  --color-brand-900: #1f4407;
+  --color-brand-950: #133005;
+
+  /* Lime — the swoosh tip. Dark surfaces only. */
+  --color-lime-50: #fafdee;
+  --color-lime-100: #f3fad9;
+  --color-lime-200: #e7f5b4;
+  --color-lime-300: #d3eb7f;
+  --color-lime-400: #b7d334; /* logo lime — 5.04:1 on brand-800 */
+  --color-lime-500: #9cbb1f;
+  --color-lime-600: #7d9615;
+  --color-lime-700: #5f7113;
+  --color-lime-800: #4a5814;
+  --color-lime-900: #3e4a16;
+
+  /* Silver — the gear. This ramp IS the logo's neutral; the named steps are
+     the sampled values, not approximations of them. */
+  --color-silver-50: #fafaf9;
+  --color-silver-100: #f2f1f0;
+  --color-silver-200: #e6e5e4;
+  --color-silver-300: #d9d7d6;
+  --color-silver-400: #bbb9b9;
+  --color-silver-500: #a8a7a7;
+  --color-silver-600: #979696;
+  --color-silver-700: #858585;
+  --color-silver-800: #6b6a6a;
+  --color-silver-900: #4a4949;
+  --color-silver-950: #2b2a2a;
+
+  /* Functional status. Exactly two, deliberately muted, never decorative. */
+  --color-critical-50: #fbf1ef;
+  --color-critical-100: #f6e2de;
+  --color-critical-200: #edc5be;
+  --color-critical-300: #dfa096;
+  --color-critical-600: #a33a2e; /* 6.56:1 */
+  --color-critical-700: #862f25;
+
+  --color-warning-50: #fbf7ed;
+  --color-warning-100: #f6edd6;
+  --color-warning-200: #edd9ac;
+  --color-warning-300: #dfc078;
+  --color-warning-600: #8a6116; /* 5.52:1 */
+  --color-warning-700: #714f14;
+
+  /* Semantic aliases — pages are written against these, not raw steps. */
+  --color-page: #fafaf9;
+  --color-surface: #ffffff;
+  --color-ink: #2b2a2a;
+  --color-muted: #6b6a6a;
+  --color-line: #e6e5e4;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Bridge: the existing pages still say `green-*` and `lime-*`. Point those
+     at the brand values so nothing looks off-brand mid-migration. New code
+     uses `brand-*` / `silver-*`. */
+  --color-green-50: var(--color-brand-50);
+  --color-green-100: var(--color-brand-100);
+  --color-green-200: var(--color-brand-200);
+  --color-green-300: var(--color-brand-300);
+  --color-green-400: var(--color-brand-400);
+  --color-green-500: var(--color-brand-500);
+  --color-green-600: var(--color-brand-600);
+  --color-green-700: var(--color-brand-700);
+  --color-green-800: var(--color-brand-800);
+  --color-green-900: var(--color-brand-900);
+  --color-green-950: var(--color-brand-950);
+
+  --color-gray-50: var(--color-silver-50);
+  --color-gray-100: var(--color-silver-100);
+  --color-gray-200: var(--color-silver-200);
+  --color-gray-300: var(--color-silver-300);
+  --color-gray-400: var(--color-silver-400);
+  --color-gray-500: var(--color-silver-500);
+  --color-gray-600: var(--color-silver-600);
+  --color-gray-700: var(--color-silver-700);
+  --color-gray-800: var(--color-silver-800);
+  --color-gray-900: var(--color-silver-900);
+  --color-gray-950: var(--color-silver-950);
+}
+
+/*
+ * Light-only, deliberately. The previous stylesheet honoured
+ * prefers-color-scheme while the pages carried scattered `dark:` classes, so a
+ * dark-mode visitor already got an inconsistent half-and-half result. Shipping
+ * a real dark mode is a follow-up that needs its own steps validated against a
+ * dark surface; an automatic flip is not one.
+ */
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* One focus treatment for the whole app, from the brand token. */
+:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
