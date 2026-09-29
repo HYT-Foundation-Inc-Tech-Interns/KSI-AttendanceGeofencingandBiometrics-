@@ -178,6 +178,18 @@ export default function EmployeesPage() {
         emailError: result?.emailError,
         created: result?.created ?? false,
       });
+      /*
+       * Leave a trace behind the modal. The row itself shows nothing about
+       * whether an account exists, so once the modal is dismissed there was no
+       * way to tell this had worked -- which reads as "the button does
+       * nothing" and invites repeated clicking, each one silently invalidating
+       * the password just issued.
+       */
+      setNotice(
+        result?.created
+          ? `${employee.fullName}'s login was created.`
+          : `${employee.fullName}'s password was reset.`
+      );
     } catch (error: any) {
       console.error('Failed to issue credentials:', error);
       alert(`Failed to issue credentials: ${error.message || 'Unknown error'}`);
@@ -209,15 +221,33 @@ export default function EmployeesPage() {
     }
   };
 
-  const handleDeleteEmployee = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this employee?')) return;
+  const handleDeleteEmployee = async (employee: Employee) => {
+    /*
+     * Say what actually happens.
+     *
+     * `attendance_events` and `device_enrollments` both cascade from
+     * `employees`, so this is not "remove them from the list" -- the
+     * attendance history goes with them, and that is not recoverable from
+     * here. "Are you sure?" gave an admin no way to weigh that.
+     */
+    if (
+      !confirm(
+        `Delete ${employee.fullName}?\n\n` +
+          `This also removes their login and their face enrolment, and deletes ` +
+          `every attendance record they have. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
 
     try {
       const token = localStorage.getItem('accessToken');
       if (!token) return;
 
-      await api.deleteEmployee(token, id);
-      loadData();
+      setNotice('');
+      await api.deleteEmployee(token, employee.id);
+      await loadData();
+      setNotice(`${employee.fullName} was deleted.`);
     } catch (error: any) {
       console.error('Failed to delete employee:', error);
       alert(`Failed to delete employee: ${error.message || 'Unknown error'}`);
@@ -436,7 +466,7 @@ export default function EmployeesPage() {
                       <Button
                         variant="critical"
                         size="sm"
-                        onClick={() => handleDeleteEmployee(employee.id)}
+                        onClick={() => handleDeleteEmployee(employee)}
                       >
                         Delete
                       </Button>

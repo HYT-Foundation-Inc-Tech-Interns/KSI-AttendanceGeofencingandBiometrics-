@@ -132,7 +132,27 @@ export class ApiClient {
       throw new ApiError(finalMessage, response.status, errorData?.error?.code);
     }
 
-    return response.json();
+    /*
+     * Not every success carries a body.
+     *
+     * DELETE /employees/:id answers 204 No Content, and an unconditional
+     * response.json() threw "Unexpected end of JSON input" -- *after* the
+     * server had already deleted the row. The page then reported a failure
+     * that had not happened and skipped its refresh, so the deleted employee
+     * stayed on screen until a manual reload. Reading the text first also
+     * covers a 200 with an empty body, which a proxy or a bare res.end() can
+     * produce.
+     */
+    if (response.status === 204 || response.status === 205) {
+      return undefined as T;
+    }
+
+    const body = await response.text();
+    if (!body) {
+      return undefined as T;
+    }
+
+    return JSON.parse(body) as T;
   }
 
   // Auth
