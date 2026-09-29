@@ -5,12 +5,18 @@ import { BiometricController } from './biometric.controller';
 import { BiometricService } from './biometric.service';
 import { AwsRekognitionService } from './services/aws-rekognition.service';
 import { InsightFaceService } from './services/insightface.service';
+import { DescriptorMatchService } from './services/descriptor-match.service';
 import { Employee, DeviceEnrollment } from '../../database/entities';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Employee, DeviceEnrollment]), ConfigModule],
   controllers: [BiometricController],
-  providers: [BiometricService, AwsRekognitionService, InsightFaceService],
+  providers: [
+    BiometricService,
+    AwsRekognitionService,
+    InsightFaceService,
+    DescriptorMatchService,
+  ],
   exports: [BiometricService], // Export for use in attendance module
 })
 export class BiometricModule {}

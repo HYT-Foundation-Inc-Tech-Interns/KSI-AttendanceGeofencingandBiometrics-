@@ -18,6 +18,10 @@ import {
 } from '../../database/entities';
 import { BiometricService } from '../biometric/biometric.service';
 import { SitesService } from '../sites/sites.service';
+import {
+  ActingUser,
+  assertMayActForEmployee,
+} from '../../common/utils/employee-scope';
 import { CheckInDto, CheckOutDto, AttendanceEventResponseDto } from './dto/check-in.dto';
 import { ListAttendanceEventsQueryDto } from './dto/list-attendance-events.dto';
 
@@ -41,7 +45,14 @@ export class AttendanceService {
   async checkIn(
     organizationId: string,
     checkInDto: CheckInDto,
+    actor: ActingUser,
   ): Promise<AttendanceEventResponseDto> {
+    /*
+     * The DTO names the employee, so without this check any authenticated
+     * worker could punch in on a colleague's behalf just by changing the id.
+     */
+    assertMayActForEmployee(actor, checkInDto.employeeId);
+
     // Verify employee
     const employee = await this.employeeRepository.findOne({
       where: { id: checkInDto.employeeId, organizationId },
@@ -51,13 +62,25 @@ export class AttendanceService {
       throw new NotFoundException('Employee not found');
     }
 
-    // Check if already checked in (no matching check-out)
+    /*
+     * Check if already checked in (no matching check-out).
+     *
+     * A FLAGGED event is one that was *denied* -- outside the geofence, or a
+     * failed face match -- so it does not represent a successful check-in and
+     * must not block a retry. Counting it did exactly that: one bad face
+     * capture locked the employee out with "already checked in. Please check
+     * out first", which they could not do because they had never got in.
+     */
     const lastEvent = await this.attendanceRepository.findOne({
       where: { employeeId: checkInDto.employeeId },
       order: { serverTimestamp: 'DESC' },
     });
 
-    if (lastEvent && lastEvent.eventType === EventType.CHECK_IN) {
+    if (
+      lastEvent &&
+      lastEvent.eventType === EventType.CHECK_IN &&
+      lastEvent.status !== AttendanceStatus.FLAGGED
+    ) {
       throw new BadRequestException(
         'Employee already checked in. Please check out first.',
       );
@@ -114,16 +137,21 @@ export class AttendanceService {
     ) === 'true';
 
     let biometricVerified = true;
+    let matchScore: number | null = null;
 
     if (!skipBiometric) {
       try {
         const verifyResult = await this.biometricService.verifyFace(organizationId, {
           employeeId: checkInDto.employeeId,
           faceImage: checkInDto.faceImage,
+          faceDescriptor: checkInDto.faceDescriptor,
           deviceIdentifier: checkInDto.deviceIdentifier,
-        });
+        }, actor);
 
         biometricVerified = verifyResult.verified;
+        // Recorded so a later dispute can be settled from the stored score
+        // rather than from the fact that the request once returned 200.
+        matchScore = verifyResult.confidence ?? null;
       } catch (error) {
         // Create flagged event
         const event = this.attendanceRepository.create({
@@ -154,6 +182,7 @@ export class AttendanceService {
       gpsPoint: toGeoJsonPoint(checkInDto.longitude, checkInDto.latitude),
       status: AttendanceStatus.VERIFIED,
       deviceId: checkInDto.deviceIdentifier,
+      matchScore,
     });
 
     await this.attendanceRepository.save(event);
@@ -179,7 +208,11 @@ export class AttendanceService {
   async checkOut(
     organizationId: string,
     checkOutDto: CheckOutDto,
+    actor: ActingUser,
   ): Promise<AttendanceEventResponseDto> {
+    // Same rule as check-in: only your own record, unless you are admin or HR.
+    assertMayActForEmployee(actor, checkOutDto.employeeId);
+
     // Verify employee
     const employee = await this.employeeRepository.findOne({
       where: { id: checkOutDto.employeeId, organizationId },
@@ -189,13 +222,23 @@ export class AttendanceService {
       throw new NotFoundException('Employee not found');
     }
 
-    // Check if employee is checked in
+    /*
+     * Check if employee is checked in.
+     *
+     * A FLAGGED check-in was denied, so there is nothing to check out of --
+     * treating it as an active check-in would let a denied attempt be paired
+     * with a real check-out and produce a nonsense event sequence.
+     */
     const lastEvent = await this.attendanceRepository.findOne({
       where: { employeeId: checkOutDto.employeeId },
       order: { serverTimestamp: 'DESC' },
     });
 
-    if (!lastEvent || lastEvent.eventType === EventType.CHECK_OUT) {
+    if (
+      !lastEvent ||
+      lastEvent.eventType === EventType.CHECK_OUT ||
+      lastEvent.status === AttendanceStatus.FLAGGED
+    ) {
       throw new BadRequestException(
         'No active check-in found. Please check in first.',
       );
@@ -252,16 +295,19 @@ export class AttendanceService {
     ) === 'true';
 
     let biometricVerified = true;
+    let matchScore: number | null = null;
 
     if (!skipBiometric) {
       try {
         const verifyResult = await this.biometricService.verifyFace(organizationId, {
           employeeId: checkOutDto.employeeId,
           faceImage: checkOutDto.faceImage,
+          faceDescriptor: checkOutDto.faceDescriptor,
           deviceIdentifier: checkOutDto.deviceIdentifier,
-        });
+        }, actor);
 
         biometricVerified = verifyResult.verified;
+        matchScore = verifyResult.confidence ?? null;
       } catch (error) {
         // Create flagged event
         const event = this.attendanceRepository.create({
@@ -292,6 +338,7 @@ export class AttendanceService {
       gpsPoint: toGeoJsonPoint(checkOutDto.longitude, checkOutDto.latitude),
       status: AttendanceStatus.VERIFIED,
       deviceId: checkOutDto.deviceIdentifier,
+      matchScore,
     });
 
     await this.attendanceRepository.save(event);

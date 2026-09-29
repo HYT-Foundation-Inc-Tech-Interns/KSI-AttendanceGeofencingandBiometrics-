@@ -82,6 +82,24 @@ async function bootstrap() {
       ...configuredOrigins,
       /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:300[12]$/,
       /^http:\/\/172\.\d{1,3}\.\d{1,3}\.\d{1,3}:300[12]$/,
+      /*
+       * Cloudflare quick tunnels.
+       *
+       * A quick tunnel gets a brand-new hostname every time it starts, so
+       * pinning one in CORS_ORIGINS guarantees the dashboard breaks the next
+       * time the tunnel is recreated -- which is exactly what happened, and
+       * the failure is confusing: preflight returns 204 with the
+       * credentials and headers it allows, but omits
+       * Access-Control-Allow-Origin, which the browser treats as a hard
+       * block.
+       *
+       * Allowing the whole namespace is a development affordance and is
+       * narrow in practice: authentication is a Bearer token read from
+       * localStorage, never a cookie, so an unrelated origin gets no ambient
+       * authority from being allowed to make the request. Production origins
+       * belong in CORS_ORIGINS.
+       */
+      /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/,
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

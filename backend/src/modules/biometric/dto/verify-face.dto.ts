@@ -1,5 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, IsUUID, IsOptional } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+  IsUUID,
+  IsOptional,
+  IsArray,
+  IsNumber,
+  ArrayMinSize,
+  ArrayMaxSize,
+} from 'class-validator';
+import { FACE_DESCRIPTOR_LENGTH } from '../services/descriptor-match.service';
 
 export class VerifyFaceDto {
   @ApiProperty({
@@ -11,12 +21,26 @@ export class VerifyFaceDto {
   employeeId: string;
 
   @ApiProperty({
-    description: 'Base64-encoded face image for verification (JPEG/PNG)',
+    description:
+      'Base64-encoded face image for verification (JPEG/PNG). Optional; prefer faceDescriptor.',
     example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    required: false,
   })
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  faceImage: string;
+  faceImage?: string;
+
+  @ApiProperty({
+    description: `The ${FACE_DESCRIPTOR_LENGTH}-d face descriptor computed on the device. One of faceDescriptor or faceImage is required.`,
+    required: false,
+    type: [Number],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(FACE_DESCRIPTOR_LENGTH)
+  @ArrayMaxSize(FACE_DESCRIPTOR_LENGTH)
+  @IsNumber({}, { each: true })
+  faceDescriptor?: number[];
 
   @ApiProperty({
     description: 'Device identifier (optional for device-specific verification)',

@@ -77,8 +77,12 @@ CREATE TABLE device_enrollments (
   -- Device identification used to scope an enrollment to a specific handset
   device_identifier TEXT,
   device_name TEXT,
-  -- Reference to encrypted face embedding (NOT the raw photo)
+  -- Where the face embedding lives, e.g. 'inline:face_descriptor'
   face_embedding_ref TEXT NOT NULL,
+  -- The 128-d face-api descriptor computed on the phone. Only the vector is
+  -- stored, never the captured photo; a descriptor cannot be turned back into
+  -- an image, which is why it can live here in the clear.
+  face_descriptor JSONB,
   -- Working copy of the embedding; encrypted at rest in production
   face_embedding_data TEXT,
   is_revoked BOOLEAN NOT NULL DEFAULT FALSE,

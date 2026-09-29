@@ -55,7 +55,7 @@ export class AttendanceController {
     @CurrentUser() user: any,
     @Body() checkInDto: CheckInDto,
   ): Promise<AttendanceEventResponseDto> {
-    return this.attendanceService.checkIn(user.organizationId, checkInDto);
+    return this.attendanceService.checkIn(user.organizationId, checkInDto, user);
   }
 
   @Post('check-out')
@@ -77,7 +77,7 @@ export class AttendanceController {
     @CurrentUser() user: any,
     @Body() checkOutDto: CheckOutDto,
   ): Promise<AttendanceEventResponseDto> {
-    return this.attendanceService.checkOut(user.organizationId, checkOutDto);
+    return this.attendanceService.checkOut(user.organizationId, checkOutDto, user);
   }
 
   @Get('events')

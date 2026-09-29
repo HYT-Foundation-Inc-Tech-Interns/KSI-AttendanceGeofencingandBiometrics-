@@ -18,10 +18,12 @@
  *     undefined. `window.isSecureContext` detects this up front and explains it,
  *     because the raw symptom ("Cannot read properties of undefined") is useless.
  *
- *  2. `CheckInDto.faceImage` is `@IsNotEmpty()`. The server currently runs with
- *     DEV_SKIP_BIOMETRIC_VERIFICATION=true, but that flag is read *inside* the
- *     service, after the DTO has already been validated -- so an empty image is
- *     rejected with a 400 regardless. A real frame is always captured.
+ *  2. Face capture happens on the device. `@vladmandic/face-api` turns the
+ *     camera frame into a 128-d descriptor locally and only that vector is
+ *     sent -- see `@/lib/face`. The server makes the match decision; a client
+ *     that could decide for itself could simply claim a match. If the models
+ *     fail to load, the page falls back to sending a JPEG frame so a phone
+ *     with a bad connection is not locked out entirely.
  *
  *  3. The geofence is enforced server-side with DEV_SKIP_GEOFENCE_VALIDATION=false.
  *     The pre-check below is advisory only: it exists so a worker standing
@@ -40,6 +42,14 @@ import {
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { ApiError, api } from '@/lib/api';
+import {
+  FaceCaptureResult,
+  areFaceModelsReady,
+  captureFaceDescriptor,
+  detectFaces,
+  loadFaceModels,
+} from '@/lib/face';
+import { getDeviceId } from '@/lib/device';
 import {
   SessionUser,
   clearSession,
@@ -118,6 +128,43 @@ function describeGeoError(err: unknown): string {
   return (err as Error)?.message || 'Could not determine your location.';
 }
 
+/**
+ * A short human label for this handset, stored with the enrollment so an
+ * administrator looking at the record can tell which device a face belongs
+ * to. Only coarse platform and browser names are derived -- nothing that
+ * identifies the person or the exact device.
+ */
+function describeDevice(): string {
+  if (typeof navigator === 'undefined') return 'Unknown Device';
+
+  const ua = navigator.userAgent;
+  const platform = /iPhone|iPad|iPod/.test(ua)
+    ? 'iOS'
+    : /Android/.test(ua)
+      ? 'Android'
+      : /Windows/.test(ua)
+        ? 'Windows'
+        : /Mac OS X/.test(ua)
+          ? 'macOS'
+          : /Linux/.test(ua)
+            ? 'Linux'
+            : 'Unknown';
+
+  const browser = /Edg\//.test(ua)
+    ? 'Edge'
+    : /OPR\//.test(ua)
+      ? 'Opera'
+      : /Chrome\//.test(ua)
+        ? 'Chrome'
+        : /Safari\//.test(ua)
+          ? 'Safari'
+          : /Firefox\//.test(ua)
+            ? 'Firefox'
+            : 'browser';
+
+  return `${platform} ${browser}`;
+}
+
 export default function CheckInPage() {
   const router = useRouter();
   const [stage, setStage] = useState<Stage>('booting');
@@ -135,6 +182,35 @@ export default function CheckInPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraError, setCameraError] = useState('');
+
+  /*
+   * Face recognition state.
+   *
+   * `faceModelState` tracks the 6.8 MB of model weights; check-in cannot be
+   * face-verified until they are loaded, so the UI says so instead of letting
+   * the user press a button that will fail.
+   *
+   * `faceStatus` is the live "are you framed" reading, refreshed on a short
+   * interval. It is advisory: the authoritative capture happens on submit.
+   */
+  const [faceModelState, setFaceModelState] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle');
+  const [faceModelError, setFaceModelError] = useState('');
+  const [faceStatus, setFaceStatus] = useState<{
+    count: number;
+    score: number;
+  } | null>(null);
+
+  /*
+   * Whether this employee already has a face on file. `null` means "not
+   * checked yet", which is distinct from "no enrollment" -- showing the
+   * register-your-face prompt before the answer is known would flash it at
+   * everyone on every load.
+   */
+  const [hasEnrollment, setHasEnrollment] = useState<boolean | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollMessage, setEnrollMessage] = useState('');
 
   // Submit
   const [submitting, setSubmitting] = useState(false);
@@ -181,6 +257,54 @@ export default function CheckInPage() {
     () => sites.find((s) => s.id === siteId) ?? null,
     [sites, siteId]
   );
+
+  /*
+   * Plain-language framing advice for the overlay.
+   *
+   * Phrased as instructions rather than status codes: "Move closer" is
+   * actionable, "score 0.42" is not.
+   */
+  const framing = useMemo(() => {
+    if (faceModelState === 'idle' || faceModelState === 'loading') {
+      return { tone: 'muted' as const, text: 'Preparing face recognition…' };
+    }
+    if (faceModelState === 'error') {
+      return {
+        tone: 'warn' as const,
+        text: 'Face recognition unavailable — check-in will still be attempted',
+      };
+    }
+    if (!faceStatus) {
+      return { tone: 'muted' as const, text: 'Looking for your face…' };
+    }
+    if (faceStatus.count === 0) {
+      return { tone: 'warn' as const, text: 'No face in view — centre your face in the oval' };
+    }
+    if (faceStatus.count > 1) {
+      return { tone: 'warn' as const, text: 'More than one face — make sure only you are in frame' };
+    }
+    if (faceStatus.score < 0.6) {
+      return { tone: 'warn' as const, text: 'Hold still and move a little closer' };
+    }
+    return { tone: 'ok' as const, text: 'Face detected' };
+  }, [faceModelState, faceStatus]);
+
+  /*
+   * Check-in needs a face on file before the server can verify one. While the
+   * models are still loading (or failed to load) this is not enforced, so a
+   * phone that cannot download them is not locked out of checking in.
+   */
+  const needsEnrollment = faceModelState === 'ready' && hasEnrollment === false;
+
+  /*
+   * While the models are still downloading, submitting would silently fall
+   * back to sending an image -- which the server cannot match against a
+   * descriptor enrollment, producing a confusing rejection. Better to wait.
+   * An *error* state is different: the fallback is then the only option, so
+   * the button stays available.
+   */
+  const faceBlocking =
+    faceModelState === 'idle' || faceModelState === 'loading' || needsEnrollment;
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -336,6 +460,109 @@ export default function CheckInPage() {
     };
   }, [stage, secure, siteId, stopCamera]);
 
+  /*
+   * Load the face models as soon as the camera is up.
+   *
+   * Started here rather than on submit so the 6.8 MB download overlaps with
+   * the worker picking a site and framing their face, instead of being a
+   * dead wait at the end.
+   */
+  useEffect(() => {
+    if (stage !== 'ready' || !secure || !siteId) return;
+    if (faceModelState !== 'idle') return;
+
+    let cancelled = false;
+    setFaceModelState('loading');
+
+    loadFaceModels()
+      .then(() => {
+        if (cancelled) return;
+        setFaceModelState('ready');
+        setFaceModelError('');
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setFaceModelState('error');
+        setFaceModelError(err?.message || 'Face recognition could not be loaded.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stage, secure, siteId, faceModelState]);
+
+  /*
+   * Does this employee already have a face enrolled?
+   *
+   * Only asked once the models are ready, because the answer only matters for
+   * the face-verified path.
+   */
+  useEffect(() => {
+    if (stage !== 'ready' || !token || !employeeId) return;
+    if (faceModelState !== 'ready') return;
+    if (hasEnrollment !== null) return;
+
+    let cancelled = false;
+
+    api
+      .getFaceEnrollments(token, employeeId)
+      .then((enrollments) => {
+        if (cancelled) return;
+        const active = (enrollments ?? []).filter(
+          (enrollment) => !enrollment.isRevoked && enrollment.hasDescriptor
+        );
+        setHasEnrollment(active.length > 0);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        /*
+         * Treat an unreadable answer as "already enrolled" rather than
+         * blocking the worker behind a registration screen that may be
+         * pointless. The server still refuses a check-in it cannot verify.
+         */
+        setHasEnrollment(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [stage, token, employeeId, faceModelState, hasEnrollment]);
+
+  /*
+   * Live framing feedback.
+   *
+   * Runs about once a second while the camera is up. Without it the worker
+   * gets no signal until they press the button and are told the capture was
+   * unusable, which is a poor loop on a phone.
+   */
+  useEffect(() => {
+    if (stage !== 'ready' || !secure || !siteId) return;
+    if (faceModelState !== 'ready' || cameraError) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      const video = videoRef.current;
+      if (video && video.videoWidth && !cancelled) {
+        try {
+          const reading = await detectFaces(video);
+          if (!cancelled) setFaceStatus(reading);
+        } catch {
+          // A failed poll is not worth surfacing; the next one will retry.
+        }
+      }
+      if (!cancelled) timer = setTimeout(poll, 900);
+    };
+
+    timer = setTimeout(poll, 600);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [stage, secure, siteId, faceModelState, cameraError]);
+
   /** Downscale to 640px wide so the base64 body stays small on a phone uplink. */
   const captureFaceImage = (): string | null => {
     const video = videoRef.current;
@@ -431,6 +658,77 @@ export default function CheckInPage() {
     }
   };
 
+  /**
+   * Grab the face for a request.
+   *
+   * Prefers the descriptor. Falls back to a JPEG frame only when the models
+   * could not be loaded, so a phone that cannot download them is not locked
+   * out entirely -- the server then decides what it can do with an image
+   * (nothing, if the employee is enrolled by descriptor, which is the honest
+   * answer rather than a silent pass).
+   */
+  const captureFace = async (): Promise<{
+    faceDescriptor?: number[];
+    faceImage?: string;
+  }> => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) {
+      throw new Error(
+        'Could not capture a photo. Make sure the camera preview is showing, then try again.'
+      );
+    }
+
+    if (areFaceModelsReady()) {
+      const result: FaceCaptureResult = await captureFaceDescriptor(video);
+      if (result.ok) return { faceDescriptor: result.descriptor };
+      throw new Error(result.message);
+    }
+
+    const faceImage = captureFaceImage();
+    if (!faceImage) {
+      throw new Error(
+        'Could not capture a photo. Make sure the camera preview is showing, then try again.'
+      );
+    }
+    return { faceImage };
+  };
+
+  const handleEnroll = async () => {
+    if (!token || !employeeId) return;
+    setEnrolling(true);
+    setError('');
+    setEnrollMessage('');
+
+    try {
+      const face = await captureFace();
+
+      if (!face.faceDescriptor) {
+        throw new Error(
+          'Face recognition is still loading. Give it a moment and try again.'
+        );
+      }
+
+      await api.enrollFace(token, {
+        employeeId,
+        faceDescriptor: face.faceDescriptor,
+        deviceIdentifier: getDeviceId(),
+        deviceName: describeDevice(),
+      });
+
+      setHasEnrollment(true);
+      setEnrollMessage('Face saved. You can check in now.');
+    } catch (err) {
+      if (isPasswordChangeRequired(err)) {
+        setForced(true);
+        setStage('set_password');
+        return;
+      }
+      setError((err as Error).message || 'Could not save your face. Please try again.');
+    } finally {
+      setEnrolling(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!token || !employeeId || !siteId) return;
     setSubmitting(true);
@@ -459,20 +757,15 @@ export default function CheckInPage() {
         // Otherwise ignore: the pre-check is advisory, the server is authority.
       }
 
-      const faceImage = captureFaceImage();
-      if (!faceImage) {
-        throw new Error(
-          'Could not capture a photo. Make sure the camera preview is showing, then try again.'
-        );
-      }
+      const face = await captureFace();
 
       const payload = {
         employeeId,
         siteId,
         latitude,
         longitude,
-        faceImage,
-        deviceIdentifier: 'web-checkin',
+        ...face,
+        deviceIdentifier: getDeviceId(),
       };
 
       const response =
@@ -758,15 +1051,113 @@ export default function CheckInPage() {
                     autoPlay
                     className="w-full h-full object-cover"
                   />
+
+                  {/*
+                    Framing guide. The oval is where the detector expects the
+                    face; the pill underneath reports what it actually sees.
+                  */}
+                  {!cameraError && (
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                      <div
+                        className={`w-[46%] h-[68%] rounded-[50%] border-2 transition-colors duration-200 ${
+                          framing.tone === 'ok'
+                            ? 'border-brand-400'
+                            : framing.tone === 'warn'
+                              ? 'border-amber-300'
+                              : 'border-white/40'
+                        }`}
+                      />
+                    </div>
+                  )}
+
                   {cameraError && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
                       <Camera className="h-7 w-7 text-silver-400" />
                       <p className="text-sm text-silver-300">{cameraError}</p>
                     </div>
                   )}
+
+                  {!cameraError && (
+                    <div className="absolute inset-x-0 bottom-0 p-2">
+                      <div
+                        className={`mx-auto w-fit max-w-full flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium backdrop-blur-sm ${
+                          framing.tone === 'ok'
+                            ? 'bg-brand-600/85 text-white'
+                            : framing.tone === 'warn'
+                              ? 'bg-amber-500/90 text-white'
+                              : 'bg-black/55 text-white/90'
+                        }`}
+                      >
+                        {faceModelState === 'loading' || faceModelState === 'idle' ? (
+                          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                        ) : framing.tone === 'ok' ? (
+                          <CheckCircle2 className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <AlertCircle className="h-3 w-3 shrink-0" />
+                        )}
+                        <span className="truncate">{framing.text}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
+
+            {/*
+              Enrollment gate. Without a face on file there is nothing for the
+              server to match against, so the worker is asked to register one
+              before the check-in button becomes available.
+            */}
+            {needsEnrollment && (
+              <Card className="border-amber-300 bg-amber-50/60 shadow-sm">
+                <CardContent className="pt-5 space-y-3">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+                    <div>
+                      <p className="text-sm font-medium text-ink">
+                        Set up your face before checking in
+                      </p>
+                      <p className="text-xs text-muted mt-1">
+                        Your face is stored as a mathematical vector, not a photo. It
+                        takes a few seconds and only needs doing once.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    className="w-full"
+                    onClick={handleEnroll}
+                    disabled={enrolling || submitting || framing.tone !== 'ok'}
+                  >
+                    {enrolling ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="animate-spin h-4 w-4" />
+                        Saving your face…
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-2">
+                        <Camera className="h-4 w-4" />
+                        Save my face
+                      </span>
+                    )}
+                  </Button>
+                  {framing.tone !== 'ok' && (
+                    <p className="text-xs text-center text-amber-700">
+                      Wait until the preview says “Face detected”, then press the button.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {enrollMessage && (
+              <div
+                role="status"
+                className="flex items-start gap-2 p-3 text-sm text-brand-700 bg-brand-50 border border-brand-200 rounded-lg"
+              >
+                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{enrollMessage}</span>
+              </div>
+            )}
 
             {error && (
               <div
@@ -782,12 +1173,26 @@ export default function CheckInPage() {
               className="w-full"
               size="lg"
               onClick={handleSubmit}
-              disabled={submitting || loadingContext || !siteId || !secure}
+              disabled={submitting || loadingContext || !siteId || !secure || faceBlocking}
             >
               {submitting ? (
                 <span className="flex items-center gap-2">
                   <Loader2 className="animate-spin h-4 w-4" />
                   Verifying…
+                </span>
+              ) : faceBlocking ? (
+                <span className="flex items-center gap-2">
+                  {faceModelState === 'idle' || faceModelState === 'loading' ? (
+                    <>
+                      <Loader2 className="animate-spin h-4 w-4" />
+                      Preparing face recognition…
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="h-4 w-4" />
+                      Save your face first
+                    </>
+                  )}
                 </span>
               ) : (
                 <span className="flex items-center gap-2">
@@ -802,7 +1207,8 @@ export default function CheckInPage() {
             </Button>
 
             <p className="text-xs text-center text-muted">
-              Your location and a photo are sent to verify this event.
+              Your location and a face reading are sent to verify this event. The
+              photo itself never leaves your phone.
             </p>
           </div>
         )}

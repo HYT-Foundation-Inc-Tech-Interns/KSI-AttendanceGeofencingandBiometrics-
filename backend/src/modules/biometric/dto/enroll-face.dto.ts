@@ -4,9 +4,13 @@ import {
   IsString,
   IsUUID,
   IsOptional,
-  IsBase64,
+  IsArray,
+  IsNumber,
+  ArrayMinSize,
+  ArrayMaxSize,
   MaxLength,
 } from 'class-validator';
+import { FACE_DESCRIPTOR_LENGTH } from '../services/descriptor-match.service';
 
 export class EnrollFaceDto {
   @ApiProperty({
@@ -18,12 +22,26 @@ export class EnrollFaceDto {
   employeeId: string;
 
   @ApiProperty({
-    description: 'Base64-encoded face image (JPEG/PNG)',
+    description:
+      'Base64-encoded face image (JPEG/PNG). Optional; prefer faceDescriptor, which avoids uploading the photo at all.',
     example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    required: false,
   })
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  faceImage: string; // Base64 or data URL
+  faceImage?: string;
+
+  @ApiProperty({
+    description: `The ${FACE_DESCRIPTOR_LENGTH}-d face descriptor computed on the device. One of faceDescriptor or faceImage is required.`,
+    required: false,
+    type: [Number],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(FACE_DESCRIPTOR_LENGTH)
+  @ArrayMaxSize(FACE_DESCRIPTOR_LENGTH)
+  @IsNumber({}, { each: true })
+  faceDescriptor?: number[];
 
   @ApiProperty({
     description: 'Device unique identifier',

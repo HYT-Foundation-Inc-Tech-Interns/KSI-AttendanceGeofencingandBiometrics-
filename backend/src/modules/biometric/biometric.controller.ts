@@ -47,7 +47,7 @@ export class BiometricController {
     @CurrentUser() user: any,
     @Body() enrollDto: EnrollFaceDto,
   ): Promise<EnrollFaceResponseDto> {
-    return this.biometricService.enrollFace(user.organizationId, enrollDto);
+    return this.biometricService.enrollFace(user.organizationId, enrollDto, user);
   }
 
   @Post('verify')
@@ -69,7 +69,7 @@ export class BiometricController {
     @CurrentUser() user: any,
     @Body() verifyDto: VerifyFaceDto,
   ): Promise<VerifyFaceResponseDto> {
-    return this.biometricService.verifyFace(user.organizationId, verifyDto);
+    return this.biometricService.verifyFace(user.organizationId, verifyDto, user);
   }
 
   @Get('enrollments/:employeeId')
@@ -81,7 +81,7 @@ export class BiometricController {
   @ApiResponse({ status: 200, description: 'List of enrollments' })
   @ApiResponse({ status: 404, description: 'Employee not found' })
   async getEnrollments(@CurrentUser() user: any, @Param('employeeId') employeeId: string) {
-    return this.biometricService.getEmployeeEnrollments(user.organizationId, employeeId);
+    return this.biometricService.getEmployeeEnrollments(user.organizationId, employeeId, user);
   }
 
   @Delete('enrollments/:enrollmentId')
@@ -97,6 +97,6 @@ export class BiometricController {
     @CurrentUser() user: any,
     @Param('enrollmentId') enrollmentId: string,
   ): Promise<void> {
-    return this.biometricService.revokeEnrollment(user.organizationId, enrollmentId);
+    return this.biometricService.revokeEnrollment(user.organizationId, enrollmentId, user);
   }
 }

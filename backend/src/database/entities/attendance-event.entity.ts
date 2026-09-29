@@ -79,7 +79,7 @@ export class AttendanceEvent {
   livenessScore: number;
 
   @Column({ name: 'match_score', type: 'numeric', nullable: true })
-  matchScore: number;
+  matchScore: number | null;
 
   @Column({
     type: 'enum',

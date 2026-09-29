@@ -335,10 +335,11 @@ export class ApiClient {
   /**
    * Check in / check out.
    *
-   * `faceImage` must be a non-empty string even when the server runs with
-   * DEV_SKIP_BIOMETRIC_VERIFICATION=true -- the DTO rejects an empty value
-   * before the service ever consults that flag. The caller therefore always
-   * captures a real frame rather than relying on the skip.
+   * Supply `faceDescriptor` (the 128-d vector computed on the device) or
+   * `faceImage`. The server rejects a request carrying neither, so the caller
+   * always sends one of them -- it does not rely on
+   * DEV_SKIP_BIOMETRIC_VERIFICATION, because that flag is read inside the
+   * service, after the DTO has already been validated.
    */
   async checkIn(
     token: string,
@@ -347,7 +348,8 @@ export class ApiClient {
       siteId: string;
       latitude: number;
       longitude: number;
-      faceImage: string;
+      faceImage?: string;
+      faceDescriptor?: number[];
       deviceIdentifier?: string;
     }
   ) {
@@ -373,7 +375,8 @@ export class ApiClient {
       siteId: string;
       latitude: number;
       longitude: number;
-      faceImage: string;
+      faceImage?: string;
+      faceDescriptor?: number[];
       deviceIdentifier?: string;
     }
   ) {
@@ -390,6 +393,55 @@ export class ApiClient {
       body: JSON.stringify(data),
       token,
     });
+  }
+
+  /**
+   * Enroll a face for an employee.
+   *
+   * Sends the descriptor rather than the photo, so the server stores a vector
+   * it cannot reverse into an image.
+   */
+  async enrollFace(
+    token: string,
+    data: {
+      employeeId: string;
+      faceDescriptor?: number[];
+      faceImage?: string;
+      deviceIdentifier?: string;
+      deviceName?: string;
+    }
+  ) {
+    return this.request<{
+      success: boolean;
+      enrollmentId: string;
+      faceQuality?: number;
+      message: string;
+    }>('/biometric/enroll', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      token,
+    });
+  }
+
+  /**
+   * List an employee's device enrollments, so the UI can show if one exists.
+   *
+   * The response deliberately carries no `faceDescriptor`: the vector is the
+   * credential, and handing it to a browser would let it be replayed as that
+   * person's face. `hasDescriptor` is what callers actually need.
+   */
+  async getFaceEnrollments(token: string, employeeId: string) {
+    return this.request<
+      Array<{
+        id: string;
+        deviceIdentifier: string | null;
+        deviceName: string | null;
+        isRevoked: boolean;
+        enrolledAt: string;
+        faceEmbeddingRef: string;
+        hasDescriptor: boolean;
+      }>
+    >(`/biometric/enrollments/${employeeId}`, { token });
   }
 
   // Admin operations
