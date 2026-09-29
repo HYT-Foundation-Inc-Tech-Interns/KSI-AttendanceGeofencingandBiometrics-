@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { User } from '../../database/entities';
+import { canonicalEmail } from '../../common/utils/password.util';
 import { JwtPayload } from './strategies/jwt.strategy';
 
 @Injectable()
@@ -21,8 +22,15 @@ export class AuthService {
   ) {}
 
   async validateUser(email: string, password: string): Promise<any> {
+    /*
+     * Emails are stored canonicalised (lower-cased, trimmed) by
+     * EmployeesService, but users.email is a case-sensitive text column. A
+     * worker typing "Juan.Delacruz@..." on a phone keyboard would otherwise
+     * fail against the stored "juan.delacruz@..." even though the credentials
+     * are correct.
+     */
     const user = await this.userRepository.findOne({
-      where: { email, isActive: true },
+      where: { email: canonicalEmail(email), isActive: true },
     });
 
     if (!user) {
