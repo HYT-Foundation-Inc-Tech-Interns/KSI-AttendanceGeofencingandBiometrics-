@@ -203,6 +203,23 @@ export default function CheckInPage() {
   } | null>(null);
 
   /*
+   * The model load must start exactly once, and must survive the effect
+   * re-running.
+   *
+   * This is subtle enough to be worth spelling out, because getting it wrong is
+   * silent. The effect below sets `faceModelState` synchronously, and if that
+   * state is also in its own dependency array, React re-runs the effect, runs
+   * the previous invocation's cleanup, and marks the in-flight load cancelled.
+   * When the weights then finish downloading, the resolved promise discards its
+   * own result -- so the UI sits on "Preparing face recognition..." forever
+   * while the 6.8 MB has in fact arrived. `faceLoadStartedRef` makes the load
+   * once-only, and `mountedRef` is the only cancellation actually wanted:
+   * leaving the page.
+   */
+  const faceLoadStartedRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  /*
    * Whether this employee already has a face on file. `null` means "not
    * checked yet", which is distinct from "no enrollment" -- showing the
    * register-your-face prompt before the answer is known would flash it at
@@ -469,27 +486,40 @@ export default function CheckInPage() {
    */
   useEffect(() => {
     if (stage !== 'ready' || !secure || !siteId) return;
-    if (faceModelState !== 'idle') return;
+    if (faceLoadStartedRef.current) return;
+    faceLoadStartedRef.current = true;
 
-    let cancelled = false;
     setFaceModelState('loading');
 
     loadFaceModels()
       .then(() => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setFaceModelState('ready');
         setFaceModelError('');
       })
       .catch((err: Error) => {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         setFaceModelState('error');
         setFaceModelError(err?.message || 'Face recognition could not be loaded.');
       });
+    /*
+     * Deliberately no `faceModelState` dependency and no cleanup: this load is
+     * not tied to any value in the array, and cancelling it on a dependency
+     * change is exactly the bug described above.
+     */
+  }, [stage, secure, siteId]);
 
+  /*
+   * Track unmount. Re-asserting `true` on mount keeps this correct under
+   * React's development-mode double-invocation, where the effect is mounted,
+   * torn down, and mounted again.
+   */
+  useEffect(() => {
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
-  }, [stage, secure, siteId, faceModelState]);
+  }, []);
 
   /*
    * Does this employee already have a face enrolled?

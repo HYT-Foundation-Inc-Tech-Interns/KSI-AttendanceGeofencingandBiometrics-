@@ -74,6 +74,35 @@ let faceApi: FaceApi | null = null;
 let loading: Promise<FaceApi> | null = null;
 
 /**
+ * How long a single step of the load may take before it is treated as failed.
+ *
+ * Generous, because a field worker on a poor connection may legitimately need a
+ * while for 6.8 MB -- but finite, because without it a stalled transfer leaves
+ * the UI saying "Preparing face recognition..." indefinitely, with no way for
+ * the user to tell "still arriving" from "never going to arrive".
+ */
+const MODEL_LOAD_TIMEOUT_MS = 60_000;
+
+function withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out. Check your connection and try again.`));
+    }, MODEL_LOAD_TIMEOUT_MS);
+
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+/**
  * Load the three models this flow needs.
  *
  * Idempotent: concurrent callers share one load, and a second call after
@@ -90,11 +119,23 @@ export async function loadFaceModels(): Promise<FaceApi> {
   if (loading) return loading;
 
   loading = (async () => {
-    const api = await import('@vladmandic/face-api');
+    const api = await withTimeout(
+      import('@vladmandic/face-api'),
+      'Loading the face recognition library'
+    );
 
-    await api.nets.tinyFaceDetector.loadFromUri(MODEL_URI);
-    await api.nets.faceLandmark68Net.loadFromUri(MODEL_URI);
-    await api.nets.faceRecognitionNet.loadFromUri(MODEL_URI);
+    await withTimeout(
+      api.nets.tinyFaceDetector.loadFromUri(MODEL_URI),
+      'Loading the face detector'
+    );
+    await withTimeout(
+      api.nets.faceLandmark68Net.loadFromUri(MODEL_URI),
+      'Loading the face landmark model'
+    );
+    await withTimeout(
+      api.nets.faceRecognitionNet.loadFromUri(MODEL_URI),
+      'Loading the face recognition model'
+    );
 
     faceApi = api;
     return api;
