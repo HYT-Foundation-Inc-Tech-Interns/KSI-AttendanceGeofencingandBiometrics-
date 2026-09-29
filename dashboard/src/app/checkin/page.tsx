@@ -43,6 +43,16 @@ import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { api } from '@/lib/api';
 import {
+  SessionUser,
+  clearSession,
+  displayName,
+  employeeIdOf,
+  extractSession,
+  isEmployeeRole,
+  readSession,
+  saveSession,
+} from '@/lib/auth';
+import {
   AlertCircle,
   Camera,
   CheckCircle2,
@@ -51,18 +61,6 @@ import {
   MapPin,
   RefreshCw,
 } from 'lucide-react';
-
-/** The /auth/login response stores the user in snake_case; older records in
- *  localStorage may hold camelCase. Both are read so a stale entry still works. */
-interface StoredUser {
-  id?: string;
-  email?: string;
-  full_name?: string;
-  fullName?: string;
-  role?: string;
-  employee_id?: string | null;
-  employeeId?: string | null;
-}
 
 interface SiteOption {
   id: string;
@@ -77,14 +75,6 @@ type Stage = 'booting' | 'login' | 'ready' | 'done';
 function asArray<T>(value: T[] | { data: T[] } | undefined | null): T[] {
   if (!value) return [];
   return Array.isArray(value) ? value : (value.data ?? []);
-}
-
-function displayName(user: StoredUser | null): string {
-  return user?.full_name || user?.fullName || user?.email || 'Employee';
-}
-
-function employeeIdOf(user: StoredUser | null): string | null {
-  return user?.employee_id || user?.employeeId || null;
 }
 
 function formatClock(iso: string | Date | undefined): string {
@@ -113,7 +103,7 @@ function describeGeoError(err: unknown): string {
 export default function CheckInPage() {
   const [stage, setStage] = useState<Stage>('booting');
   const [token, setToken] = useState<string | null>(null);
-  const [user, setUser] = useState<StoredUser | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
 
   // Login form
   const [email, setEmail] = useState('');
@@ -171,25 +161,27 @@ export default function CheckInPage() {
   // ---- Session restore -----------------------------------------------------
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('accessToken');
-    const storedUser = localStorage.getItem('user');
+    const session = readSession();
 
-    if (!storedToken || !storedUser) {
+    if (!session) {
       setStage('login');
       return;
     }
 
-    try {
-      const parsed = JSON.parse(storedUser) as StoredUser;
-      setToken(storedToken);
-      setUser(parsed);
-      setStage('ready');
-    } catch {
-      // A corrupt entry would otherwise wedge the page on every load.
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('user');
+    /*
+     * This is the employee door. A back-office account that somehow ends up
+     * holding a stored session here is signed out rather than shown a check-in
+     * screen it has no employee record for.
+     */
+    if (!isEmployeeRole(session.user.role)) {
+      clearSession();
       setStage('login');
+      return;
     }
+
+    setToken(session.token);
+    setUser(session.user);
+    setStage('ready');
   }, []);
 
   // Start waking the backend immediately. On a free tier that stops idle
@@ -335,26 +327,30 @@ export default function CheckInPage() {
     setError('');
     try {
       const response = await api.login(email, password);
-      const accessToken = (response as any).access_token || response.accessToken;
-      const refreshToken = (response as any).refresh_token || response.refreshToken;
+      const { accessToken, refreshToken, user: nextUser } = extractSession(response);
 
-      localStorage.setItem('accessToken', accessToken);
-      localStorage.setItem('refreshToken', refreshToken);
-      localStorage.setItem('user', JSON.stringify(response.user));
-
-      const nextUser = response.user as StoredUser;
-      if (!employeeIdOf(nextUser)) {
-        // An admin/HR account has no employee record, so there is nothing to
-        // check in. Say so plainly instead of failing later on a missing id.
+      /*
+       * Employees only. An administrator account is not an employee and has
+       * nothing to clock in for, so it is refused before the session is
+       * written -- the dashboard at "/" is the other door.
+       */
+      if (!isEmployeeRole(nextUser.role)) {
         setError(
-          'This account is not linked to an employee record, so it cannot check in. Sign in with your employee account.'
+          'This is the employee check-in page. Administrator accounts sign in at the dashboard instead.'
         );
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        localStorage.removeItem('user');
         return;
       }
 
+      // An employee-role account with no employee record has nothing to check
+      // in against, so say that plainly instead of failing on a missing id.
+      if (!employeeIdOf(nextUser)) {
+        setError(
+          'This account is not linked to an employee record, so it cannot check in. Ask an administrator to link it.'
+        );
+        return;
+      }
+
+      saveSession(accessToken, refreshToken, nextUser);
       setToken(accessToken);
       setUser(nextUser);
       setStage('ready');
@@ -367,9 +363,7 @@ export default function CheckInPage() {
 
   const handleSignOut = () => {
     stopCamera();
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    localStorage.removeItem('user');
+    clearSession();
     setToken(null);
     setUser(null);
     setResult(null);

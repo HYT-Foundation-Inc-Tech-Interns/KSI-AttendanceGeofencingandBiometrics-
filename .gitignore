@@ -191,3 +191,13 @@ $RECYCLE.BIN/
 # as normal files in this single repository. Rename back to dashboard/.git to
 # restore it as a standalone repo.
 .git-scaffold-backup/
+
+# =============================================================================
+# LOCAL SCRATCH
+# =============================================================================
+# WorkBuddy project data (local memory logs). Not part of the deliverable.
+.workbuddy-ai/
+
+# Throwaway static file server for opening the built dashboard/out over a
+# tunnel on a phone. `next dev` is the normal development path.
+_serve-out.mjs

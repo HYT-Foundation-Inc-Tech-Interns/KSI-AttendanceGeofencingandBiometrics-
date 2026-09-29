@@ -77,9 +77,17 @@ export class EmployeesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all employees for organization' })
+  @Roles(UserRole.ADMIN, UserRole.HR)
+  @ApiOperation({
+    summary: 'Get all employees for organization',
+    description:
+      'Back-office only. This returns the whole directory including every ' +
+      'employee email address, so it is not reachable with an employee token. ' +
+      'The check-in page reads the signed-in employee from GET /employees/:id.',
+  })
   @ApiQuery({ name: 'siteId', required: false, description: 'Filter by site ID' })
   @ApiResponse({ status: 200, description: 'Employees retrieved successfully', type: [GetEmployeeResponseDto] })
+  @ApiResponse({ status: 403, description: 'Insufficient permissions' })
   async findAll(
     @CurrentUser('organizationId') organizationId: string,
     @Query('siteId') siteId?: string,

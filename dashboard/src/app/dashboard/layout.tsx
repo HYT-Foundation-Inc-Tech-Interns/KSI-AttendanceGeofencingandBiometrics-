@@ -15,6 +15,7 @@ import {
   Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { clearSession, isBackOfficeRole, readSession } from '@/lib/auth';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -35,25 +36,32 @@ export default function DashboardLayout({
   const router = useRouter();
 
   useEffect(() => {
-    // Check if user is logged in
-    const token = localStorage.getItem('accessToken');
-    const userData = localStorage.getItem('user');
+    const session = readSession();
 
-    if (!token) {
-      router.push('/');
+    if (!session) {
+      router.replace('/');
       return;
     }
 
-    if (userData) {
-      setUser(JSON.parse(userData));
+    /*
+     * A token is not enough to be here, and this guard used to stop there:
+     * anything with a stored token reached the whole back office, so an
+     * employee who signed in at the wrong door saw every page. The role is
+     * what decides who this surface is for. An employee session is cleared
+     * and sent to the check-in page rather than left half-signed-in.
+     */
+    if (!isBackOfficeRole(session.user.role)) {
+      clearSession();
+      router.replace('/checkin');
+      return;
     }
+
+    setUser(session.user);
   }, [router]);
 
   const handleLogout = () => {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
-    localStorage.removeItem('user');
-    router.push('/');
+    clearSession();
+    router.replace('/');
   };
 
   if (!user) {
@@ -154,7 +162,10 @@ export default function DashboardLayout({
                   {user?.full_name || 'Signed in'}
                 </p>
                 <p className="text-xs text-lime-400/90 truncate capitalize">
-                  {user?.role || 'HR Manager'}
+                  {/* Was falling back to the literal 'HR Manager' for any
+                      account whose role was missing, which mislabelled the
+                      administrator. The guard above guarantees a real role. */}
+                  {user?.role || 'Administrator'}
                 </p>
               </div>
             </div>

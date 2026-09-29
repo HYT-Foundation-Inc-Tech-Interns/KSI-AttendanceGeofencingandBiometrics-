@@ -19,6 +19,8 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { UserRole } from '../../database/entities';
 import { AttendanceService } from './attendance.service';
 import {
   CheckInDto,
@@ -79,10 +81,14 @@ export class AttendanceController {
   }
 
   @Get('events')
+  @Roles(UserRole.ADMIN, UserRole.HR)
   @ApiOperation({
     summary: 'List attendance events for the organization',
     description:
-      'Paginated, filterable list of attendance events with employee and site names resolved.',
+      'Paginated, filterable list of attendance events with employee and site names resolved. ' +
+      'Back-office only: this spans every employee, so it is not reachable with an ' +
+      'employee token. Employees read their own history from ' +
+      'GET /attendance/employee/:employeeId.',
   })
   @ApiResponse({ status: 200, description: 'Attendance events retrieved' })
   async findAllEvents(

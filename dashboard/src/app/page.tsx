@@ -1,11 +1,13 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
+import { clearSession, describeRole, extractSession, isBackOfficeRole, saveSession } from '@/lib/auth';
 import { AlertCircle } from 'lucide-react';
 
 export default function LoginPage() {
@@ -13,25 +15,37 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  /** Set when a valid employee signs in at this door, so we can offer the
+   *  right link instead of just refusing. */
+  const [wrongDoor, setWrongDoor] = useState(false);
   const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError('');
+    setWrongDoor(false);
 
     try {
       const response = await api.login(email, password);
+      const { accessToken, refreshToken, user } = extractSession(response);
 
-      // Store tokens in localStorage (backend returns snake_case)
-      const accessToken = (response as any).access_token || response.accessToken;
-      const refreshToken = (response as any).refresh_token || response.refreshToken;
+      /*
+       * This is the back-office door. An employee account that signs in here
+       * has to be turned away: the credentials are valid, but the dashboard is
+       * not their surface, and previously this page redirected every role
+       * straight into the admin panel.
+       */
+      if (!isBackOfficeRole(user.role)) {
+        clearSession();
+        setWrongDoor(true);
+        setError(
+          `You signed in with ${describeRole(user.role)}. This page is for administrators — employee accounts check in from the attendance page.`
+        );
+        return;
+      }
 
-      localStorage.setItem('accessToken', accessToken);
-      localStorage.setItem('refreshToken', refreshToken);
-      localStorage.setItem('user', JSON.stringify(response.user));
-
-      // Redirect to dashboard
+      saveSession(accessToken, refreshToken, user);
       router.push('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed. Please check your credentials.');
@@ -89,7 +103,7 @@ export default function LoginPage() {
                 />
               </div>
             </div>
-            <CardTitle className="text-xl text-center">Sign in</CardTitle>
+            <CardTitle className="text-xl text-center">Administrator sign in</CardTitle>
             <CardDescription className="text-center">
               Manage attendance for your field workforce
             </CardDescription>
@@ -102,7 +116,21 @@ export default function LoginPage() {
                   className="flex items-start gap-2 p-3 text-sm text-critical-600 bg-critical-50 border border-critical-200 rounded-lg"
                 >
                   <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                  <span>{error}</span>
+                  <span>
+                    {error}
+                    {wrongDoor && (
+                      <>
+                        {' '}
+                        <Link
+                          href="/checkin"
+                          className="font-medium underline underline-offset-2"
+                        >
+                          Go to check-in
+                        </Link>
+                        .
+                      </>
+                    )}
+                  </span>
                 </div>
               )}
               <div className="space-y-1.5">
@@ -112,7 +140,7 @@ export default function LoginPage() {
                 <Input
                   id="email"
                   type="email"
-                  placeholder="admin@klassic.ph"
+                  placeholder="you@klassic.ph"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -149,11 +177,18 @@ export default function LoginPage() {
                 )}
               </Button>
             </form>
+            {/*
+              The demo-credentials hint that used to sit here printed the
+              administrator address and password on the sign-in page. This page
+              is served from a public URL, so that is a published admin
+              credential, not a convenience. Removed deliberately.
+            */}
             <div className="mt-5 pt-4 border-t border-silver-200 text-center text-xs text-silver-800">
-              Demo credentials:{' '}
-              <code className="bg-silver-100 px-1.5 py-0.5 rounded text-ink">admin@klassic.ph</code>
-              {' / '}
-              <code className="bg-silver-100 px-1.5 py-0.5 rounded text-ink">admin123</code>
+              Employees sign in at{' '}
+              <Link href="/checkin" className="font-medium text-brand-800 underline underline-offset-2">
+                the check-in page
+              </Link>
+              .
             </div>
           </CardContent>
         </Card>
