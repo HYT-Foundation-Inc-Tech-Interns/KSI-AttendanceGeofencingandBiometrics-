@@ -195,6 +195,10 @@ CREATE TABLE users (
   employee_id UUID REFERENCES employees(id) ON DELETE SET NULL,
   password_hash TEXT NOT NULL,
   is_active BOOLEAN DEFAULT TRUE,
+  -- TRUE while the account is still on an administrator-issued temporary
+  -- password. Cleared when the owner sets their own. Enforced by
+  -- PasswordChangeRequiredGuard, not merely shown by the client.
+  must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
   last_login_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()

@@ -42,6 +42,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       role: user.role,
       organizationId: user.organizationId,
       employeeId: user.employeeId,
+      /*
+       * Read live from the database rather than from a token claim. A claim
+       * would be stale the moment the password changed, and would also let a
+       * token minted before the flag was set slip past the guard. This query
+       * was already happening, so the check is free.
+       */
+      mustChangePassword: user.mustChangePassword,
     };
   }
 }

@@ -38,6 +38,28 @@ function buildQuery(params?: Record<string, unknown>): string {
   return new URLSearchParams(clean).toString();
 }
 
+/**
+ * An error from the API that keeps the machine-readable parts.
+ *
+ * The server sends a stable `code` alongside the human message, and some
+ * decisions depend on it rather than on the text. `PASSWORD_CHANGE_REQUIRED`
+ * is the one that matters today: a 403 also means "wrong role", and those two
+ * need different handling -- one is fixable on a screen, the other is not.
+ *
+ * Extends Error, so every existing `catch (err) { err.message }` keeps working.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export class ApiClient {
   private baseUrl: string;
 
@@ -107,7 +129,7 @@ export class ApiClient {
       const errorData = await response.json().catch(() => ({ error: { message: response.statusText } }));
       const errorMessage = errorData?.error?.message || errorData?.message || 'An error occurred';
       const finalMessage = Array.isArray(errorMessage) ? errorMessage.join(', ') : errorMessage;
-      throw new Error(finalMessage);
+      throw new ApiError(finalMessage, response.status, errorData?.error?.code);
     }
 
     return response.json();
@@ -118,6 +140,28 @@ export class ApiClient {
     return this.request<{ accessToken: string; refreshToken: string; user: any }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+    });
+  }
+
+  /**
+   * Set a new password for the signed-in account.
+   *
+   * `currentPassword` is omitted while the account is still on an
+   * administrator-issued temporary password -- the server decides whether to
+   * demand it from the stored flag, not from what is sent here.
+   */
+  async changePassword(
+    token: string,
+    newPassword: string,
+    currentPassword?: string
+  ): Promise<{ message: string; mustChangePassword: boolean }> {
+    return this.request('/auth/change-password', {
+      method: 'POST',
+      token,
+      body: JSON.stringify({
+        newPassword,
+        ...(currentPassword ? { currentPassword } : {}),
+      }),
     });
   }
 

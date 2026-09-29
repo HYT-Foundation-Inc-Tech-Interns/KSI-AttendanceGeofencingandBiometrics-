@@ -79,6 +79,12 @@ export class AuthService {
         role: user.role,
         organization_id: user.organizationId,
         employee_id: user.employeeId,
+        /*
+         * Drives the "set your own password" screen. The client needs it at
+         * sign-in time so it can route there before showing anything else;
+         * `PasswordChangeRequiredGuard` is what actually enforces it.
+         */
+        must_change_password: user.mustChangePassword === true,
       },
     };
   }
@@ -106,6 +112,82 @@ export class AuthService {
   async hashPassword(password: string): Promise<string> {
     const saltRounds = 10;
     return bcrypt.hash(password, saltRounds);
+  }
+
+  /**
+   * Replace the signed-in user's own password.
+   *
+   * Also clears `mustChangePassword`, which is what releases
+   * `PasswordChangeRequiredGuard` -- so this call is the only way out of the
+   * temporary-password state.
+   *
+   * No new tokens are issued. The guard reads the flag from the database on
+   * every request rather than from a token claim, so the caller's existing
+   * access token starts working for everything else the moment this returns.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string | undefined,
+    newPassword: string,
+  ): Promise<{ message: string; mustChangePassword: false }> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    /*
+     * The current password is demanded only for a voluntary change.
+     *
+     * While the account is flagged, the caller reached this endpoint with a
+     * session, and the only way to obtain one is to have signed in with the
+     * temporary password -- so the session already proves what the field would
+     * ask for. Enforcing it there would add nothing and cost a field worker a
+     * retyped 12-character random string on a phone.
+     *
+     * The decision is made from the stored flag, never from the request, so
+     * omitting the field cannot be used to skip the check on a normal account.
+     */
+    if (!user.mustChangePassword) {
+      if (!currentPassword) {
+        throw new BadRequestException(
+          'Your current password is required to change it.',
+        );
+      }
+
+      const currentIsCorrect = await bcrypt.compare(
+        currentPassword,
+        user.passwordHash,
+      );
+
+      if (!currentIsCorrect) {
+        throw new UnauthorizedException(
+          'That is not your current password. Check it and try again.',
+        );
+      }
+
+      if (currentPassword === newPassword) {
+        throw new BadRequestException(
+          'The new password must be different from the current one.',
+        );
+      }
+    }
+
+    // Nothing changes if the temporary password is simply kept as the new one.
+    if (await bcrypt.compare(newPassword, user.passwordHash)) {
+      throw new BadRequestException(
+        'The new password must be different from the one you signed in with.',
+      );
+    }
+
+    user.passwordHash = await this.hashPassword(newPassword);
+    user.mustChangePassword = false;
+    await this.userRepository.save(user);
+
+    return {
+      message: 'Your password has been changed.',
+      mustChangePassword: false,
+    };
   }
 
   async validatePassword(

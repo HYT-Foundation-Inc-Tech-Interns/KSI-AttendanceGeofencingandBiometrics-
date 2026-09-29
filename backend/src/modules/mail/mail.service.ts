@@ -148,12 +148,15 @@ export class MailService {
       ``,
       signInLine,
       ``,
+      `This password is temporary. The first time you sign in you will be asked to`,
+      `choose a password of your own, and this one will stop working.`,
+      ``,
       `Sign in with the details above. When you arrive at your work site, the page`,
       `will ask for your location and your camera so it can confirm you are on`,
       `site and record your time in and time out.`,
       ``,
-      `Please keep this password private. If you lose it, ask your administrator to`,
-      `issue a new one.`,
+      `Please keep this password private until you have replaced it. If you lose it,`,
+      `ask your administrator to issue a new one.`,
       ``,
       `-- Klassic Field Attendance System`,
     ].join('\n');
@@ -190,6 +193,12 @@ export class MailService {
           : ''
       }
 
+      <p style="font-size:14px;line-height:1.6;background:#f2f7ec;border-left:3px solid #519b24;padding:12px 14px;">
+        <strong>This password is temporary.</strong> The first time you sign in you
+        will be asked to choose a password of your own, and this one will stop
+        working.
+      </p>
+
       <p style="font-size:14px;line-height:1.6;">
         When you arrive at your work site, the page will ask for your location and
         your camera so it can confirm you are on site and record your time in and
@@ -197,8 +206,8 @@ export class MailService {
       </p>
 
       <p style="font-size:13px;line-height:1.6;color:#858585;border-top:1px solid #e6e5e4;padding-top:16px;margin-top:24px;">
-        Keep this password private. If you lose it, ask your administrator to issue
-        a new one.
+        Keep this password private until you have replaced it. If you lose it, ask
+        your administrator to issue a new one.
       </p>
     </div>
   </body>

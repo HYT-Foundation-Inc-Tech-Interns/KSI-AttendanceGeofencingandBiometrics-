@@ -35,6 +35,9 @@ export interface SessionUser {
   role?: string;
   employee_id?: string | null;
   employeeId?: string | null;
+  /** Set while the account is on an administrator-issued temporary password. */
+  must_change_password?: boolean;
+  mustChangePassword?: boolean;
 }
 
 /** Roles that belong in the back office. Mirrors `UserRole` on the server. */
@@ -70,6 +73,38 @@ export function displayName(user: SessionUser | null): string {
 
 export function employeeIdOf(user: SessionUser | null): string | null {
   return user?.employee_id || user?.employeeId || null;
+}
+
+/**
+ * Whether the account is still on an administrator-issued temporary password.
+ *
+ * The server is the authority — `PasswordChangeRequiredGuard` refuses every
+ * other endpoint until this is cleared — but the client needs to know up front
+ * so it can show the right screen instead of a wall of failed requests.
+ */
+export function mustChangePassword(user: SessionUser | null): boolean {
+  return user?.must_change_password === true || user?.mustChangePassword === true;
+}
+
+/**
+ * Record that the password has been changed, in the stored session.
+ *
+ * Only the flag changes. The tokens stay as they are: the guard reads the flag
+ * from the database on every request rather than from a token claim, so the
+ * existing access token becomes fully usable the moment the server clears it.
+ */
+export function markPasswordChanged(user: SessionUser): SessionUser {
+  const next: SessionUser = {
+    ...user,
+    must_change_password: false,
+    mustChangePassword: false,
+  };
+  saveSession(
+    localStorage.getItem(SESSION_KEYS.accessToken) || '',
+    localStorage.getItem(SESSION_KEYS.refreshToken) || '',
+    next
+  );
+  return next;
 }
 
 /** The token pair plus user from a login response, across both spellings. */

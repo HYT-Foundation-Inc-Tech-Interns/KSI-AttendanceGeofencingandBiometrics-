@@ -7,6 +7,7 @@ import { getDatabaseConfig } from './config/database.config';
 import { getThrottlerConfig } from './config/throttler.config';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { PasswordChangeRequiredGuard } from './common/guards/password-change-required.guard';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 // Feature Modules
@@ -64,6 +65,12 @@ import { AdminModule } from './modules/admin/admin.module';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    // Refuses every route while an account is still on a temporary password.
+    // Must come after JwtAuthGuard, which is what populates `request.user`.
+    {
+      provide: APP_GUARD,
+      useClass: PasswordChangeRequiredGuard,
     },
     // Global Rate Limiting Guard
     {

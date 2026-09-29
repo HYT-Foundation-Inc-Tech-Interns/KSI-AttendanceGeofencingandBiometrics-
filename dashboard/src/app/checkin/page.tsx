@@ -37,8 +37,9 @@ import {
   Card,
   CardContent,
 } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
-import { api } from '@/lib/api';
+import { ApiError, api } from '@/lib/api';
 import {
   SessionUser,
   clearSession,
@@ -46,12 +47,15 @@ import {
   employeeIdOf,
   homeForRole,
   isEmployeeRole,
+  markPasswordChanged,
+  mustChangePassword,
   readSession,
 } from '@/lib/auth';
 import {
   AlertCircle,
   Camera,
   CheckCircle2,
+  KeyRound,
   Loader2,
   LogOut,
   MapPin,
@@ -65,18 +69,30 @@ interface SiteOption {
 }
 
 /**
- * `booting` is the session check. There is deliberately no `login` stage: this
- * page has no sign-in form of its own. Signing in happens once, at "/", which
- * routes here by role. Reaching this page without an employee session sends
- * the visitor back to that single sign-in page.
+ * `booting` is the session check, `set_password` the temporary-password gate.
+ *
+ * There is deliberately no `login` stage: this page has no sign-in form of its
+ * own. Signing in happens once, at "/", which routes here by role.
  */
-type Stage = 'booting' | 'ready' | 'done';
+type Stage = 'booting' | 'set_password' | 'ready' | 'done';
 
 /** `GET /sites` and `GET /employees` return a bare array, but the API client
  *  types them as a union with a paginated envelope. Normalise once, here. */
 function asArray<T>(value: T[] | { data: T[] } | undefined | null): T[] {
   if (!value) return [];
   return Array.isArray(value) ? value : (value.data ?? []);
+}
+
+/**
+ * The server refused because the account is still on a temporary password.
+ *
+ * This can happen mid-session: an administrator resetting a password sets the
+ * flag again, and the next request fails even though the page was already
+ * showing the check-in screen. Detecting the specific code keeps that from
+ * surfacing as a confusing "forbidden" error on a working account.
+ */
+function isPasswordChangeRequired(err: unknown): boolean {
+  return err instanceof ApiError && err.code === 'PASSWORD_CHANGE_REQUIRED';
 }
 
 function formatClock(iso: string | Date | undefined): string {
@@ -130,6 +146,21 @@ export default function CheckInPage() {
   } | null>(null);
 
   /*
+   * Setting a password.
+   *
+   * `forced` is true when the account is still on the administrator-issued
+   * temporary password, in which case there is no way past this screen and no
+   * current password is asked for -- holding a session already proves it was
+   * known. A voluntary change asks for the current password.
+   */
+  const [forced, setForced] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+
+  /*
    * Secure-context flag, resolved *after* mount rather than during render.
    *
    * `window.isSecureContext` cannot be read while server-rendering, and
@@ -180,6 +211,18 @@ export default function CheckInPage() {
 
     setToken(session.token);
     setUser(session.user);
+
+    /*
+     * Still on the administrator-issued temporary password. The server refuses
+     * every other endpoint in this state, so there is nothing useful to show
+     * before this is dealt with -- go straight to the screen that resolves it.
+     */
+    if (mustChangePassword(session.user)) {
+      setForced(true);
+      setStage('set_password');
+      return;
+    }
+
     setStage('ready');
   }, [router]);
 
@@ -229,6 +272,11 @@ export default function CheckInPage() {
         setLastEventType(events[0]?.eventType ?? null);
         setLastEventAt(events[0]?.serverTimestamp ?? null);
       } catch (err) {
+        if (isPasswordChangeRequired(err)) {
+          setForced(true);
+          setStage('set_password');
+          return;
+        }
         setError((err as Error).message || 'Could not load your attendance details.');
       } finally {
         setLoadingContext(false);
@@ -331,6 +379,58 @@ export default function CheckInPage() {
     router.replace('/');
   };
 
+  /** Open the change-password screen for a voluntary change. */
+  const openVoluntaryPasswordChange = () => {
+    setForced(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setStage('set_password');
+  };
+
+  const handleSetPassword = async () => {
+    if (!token) return;
+    setPasswordError('');
+
+    // Checked here as well as on the server so the obvious mistakes get an
+    // instant answer instead of a round trip.
+    if (newPassword !== confirmPassword) {
+      setPasswordError('The two new passwords do not match.');
+      return;
+    }
+    if (newPassword.length < 8) {
+      setPasswordError('Your new password must be at least 8 characters.');
+      return;
+    }
+    if (!forced && !currentPassword) {
+      setPasswordError('Enter your current password.');
+      return;
+    }
+
+    setSavingPassword(true);
+    try {
+      await api.changePassword(
+        token,
+        newPassword,
+        forced ? undefined : currentPassword
+      );
+
+      setUser(markPasswordChanged(user ?? {}));
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setForced(false);
+      setStage('ready');
+    } catch (err) {
+      setPasswordError(
+        (err as Error).message || 'Could not change your password.'
+      );
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!token || !employeeId || !siteId) return;
     setSubmitting(true);
@@ -388,6 +488,11 @@ export default function CheckInPage() {
       });
       setStage('done');
     } catch (err) {
+      if (isPasswordChangeRequired(err)) {
+        setForced(true);
+        setStage('set_password');
+        return;
+      }
       // A GeolocationPositionError has a numeric `code`; API errors do not.
       const message =
         typeof (err as GeolocationPositionError)?.code === 'number'
@@ -447,6 +552,130 @@ export default function CheckInPage() {
           </Card>
         )}
 
+        {/* ---- Set your own password ---- */}
+        {stage === 'set_password' && (
+          <Card className="border-silver-200 shadow-sm">
+            <CardContent className="pt-5 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="h-9 w-9 rounded-full bg-brand-50 flex items-center justify-center shrink-0">
+                  <KeyRound className="h-4 w-4 text-brand-600" />
+                </div>
+                <div>
+                  <p className="font-medium text-ink">Choose your own password</p>
+                  <p className="text-xs text-muted mt-1">
+                    {forced
+                      ? 'Your administrator sent you a temporary password. Set your own to continue — the temporary one will stop working.'
+                      : 'Enter your current password, then choose a new one.'}
+                  </p>
+                </div>
+              </div>
+
+              {passwordError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 p-3 text-sm text-critical-600 bg-critical-50 border border-critical-200 rounded-lg"
+                >
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>{passwordError}</span>
+                </div>
+              )}
+
+              {/*
+                Only asked for on a voluntary change. While the account is on a
+                temporary password the session already proves it was known, and
+                demanding it again would mean retyping a random 12-character
+                string from an email on a phone keypad.
+              */}
+              {!forced && (
+                <div className="space-y-1.5">
+                  <label htmlFor="current-password" className="text-sm font-medium text-ink">
+                    Current password
+                  </label>
+                  <Input
+                    id="current-password"
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    disabled={savingPassword}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label htmlFor="new-password" className="text-sm font-medium text-ink">
+                  New password
+                </label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={savingPassword}
+                  autoComplete="new-password"
+                  placeholder="••••••••"
+                />
+                <p className="text-xs text-muted">At least 8 characters.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="confirm-password" className="text-sm font-medium text-ink">
+                  Confirm new password
+                </label>
+                <Input
+                  id="confirm-password"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  disabled={savingPassword}
+                  autoComplete="new-password"
+                  placeholder="••••••••"
+                />
+              </div>
+
+              <Button
+                className="w-full"
+                size="lg"
+                onClick={handleSetPassword}
+                disabled={savingPassword || !newPassword || !confirmPassword}
+              >
+                {savingPassword ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="animate-spin h-4 w-4" />
+                    Saving…
+                  </span>
+                ) : (
+                  'Save password'
+                )}
+              </Button>
+
+              {!forced ? (
+                <Button
+                  variant="ghost"
+                  className="w-full"
+                  onClick={() => setStage('ready')}
+                  disabled={savingPassword}
+                >
+                  Cancel
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  className="w-full"
+                  onClick={handleSignOut}
+                  disabled={savingPassword}
+                >
+                  <span className="flex items-center gap-2">
+                    <LogOut className="h-4 w-4" />
+                    Sign out
+                  </span>
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* ---- Ready ---- */}
         {stage === 'ready' && (
           <div className="space-y-4">
@@ -457,14 +686,24 @@ export default function CheckInPage() {
                     <p className="font-medium text-ink">{displayName(user)}</p>
                     <p className="text-xs text-muted">{user?.email}</p>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleSignOut}
-                    title="Sign out"
-                  >
-                    <LogOut className="h-4 w-4" />
-                  </Button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={openVoluntaryPasswordChange}
+                      title="Change password"
+                    >
+                      <KeyRound className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleSignOut}
+                      title="Sign out"
+                    >
+                      <LogOut className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
 
                 {lastEventType && (

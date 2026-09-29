@@ -52,6 +52,18 @@ export class User {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
+  /**
+   * True while the account is still on an administrator-issued temporary
+   * password.
+   *
+   * Set when credentials are issued, cleared when the owner sets their own
+   * password. Enforced by `PasswordChangeRequiredGuard`, which refuses every
+   * endpoint except the one that changes it -- so this is a real restriction,
+   * not just a prompt the client is trusted to show.
+   */
+  @Column({ name: 'must_change_password', type: 'boolean', default: false })
+  mustChangePassword: boolean;
+
   @Column({ name: 'last_login_at', type: 'timestamptz', nullable: true })
   lastLoginAt: Date;
 
