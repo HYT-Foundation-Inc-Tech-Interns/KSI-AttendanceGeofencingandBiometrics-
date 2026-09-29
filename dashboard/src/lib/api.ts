@@ -121,6 +121,27 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Wake a sleeping backend.
+   *
+   * The free hosting tier used for this deployment stops an idle container
+   * after ~15 minutes and takes up to a minute to start it again. Firing an
+   * unauthenticated `/health` request as the check-in page loads starts that
+   * wake-up while the worker is still signing in and framing their face, so
+   * the real submit usually does not pay the cold start.
+   *
+   * `/health` is marked @Public() on the server, so no token is needed.
+   * Failures are swallowed: this is an optimisation, never a gate -- if it
+   * never resolves, the submit path reports the real error.
+   */
+  async warmUp(): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/health`, { method: 'GET', cache: 'no-store' });
+    } catch {
+      /* ignored on purpose */
+    }
+  }
+
   // Employees
   async getEmployees(token: string, params?: { page?: number; limit?: number; search?: string }) {
     // The API returns a bare array; some callers still handle a paginated

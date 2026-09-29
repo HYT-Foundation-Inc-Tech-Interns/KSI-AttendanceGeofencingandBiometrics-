@@ -180,6 +180,13 @@ export default function CheckInPage() {
     }
   }, []);
 
+  // Start waking the backend immediately. On a free tier that stops idle
+  // containers this runs while the worker signs in and frames their face, so
+  // the submit itself rarely waits for a cold start. See api.warmUp().
+  useEffect(() => {
+    void api.warmUp();
+  }, []);
+
   // Always release the camera when leaving the page, or the recording indicator
   // stays lit and the device keeps the lens busy for the next app.
   useEffect(() => stopCamera, [stopCamera]);

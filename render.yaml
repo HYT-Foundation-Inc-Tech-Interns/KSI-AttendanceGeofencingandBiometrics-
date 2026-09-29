@@ -1,0 +1,133 @@
+# Render blueprint for the Klassic attendance API.
+#
+# Deploy with: Render Dashboard -> New -> Blueprint -> pick this repository.
+# Render reads this file and creates the service; secrets marked `sync: false`
+# are left blank and prompted for in the dashboard, so no credential is ever
+# committed here.
+#
+# Why Render: as of 2026 it is the only host still offering a genuinely free
+# tier for a long-running Docker web service. Fly.io is trial-only (card
+# required), Koyeb removed free compute, and Railway has no free tier. Render's
+# free plan stops the container after 15 minutes idle and takes up to a minute
+# to start again, which is why the check-in page pings /v1/health on load -- see
+# api.warmUp() in dashboard/src/lib/api.ts.
+#
+# Note Render's own docs say the free plan is not for production use. That is
+# about uptime guarantees, not a prohibition; for a zero-budget deployment it is
+# the available option.
+
+services:
+  - type: web
+    name: klassic-attendance-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    # /v1/health is @Public() on the server and checks the database, so a 200
+    # means the app is up AND Supabase is reachable.
+    healthCheckPath: /v1/health
+    autoDeploy: true
+    envVars:
+      # --- runtime ---------------------------------------------------------
+      - key: NODE_ENV
+        value: production
+      - key: API_PREFIX
+        value: v1
+      - key: LOG_LEVEL
+        value: log
+      # PORT is deliberately not set: Render assigns it, and the Dockerfile's
+      # healthcheck reads $PORT at runtime.
+
+      # --- database --------------------------------------------------------
+      # Already points at Supabase in backend/.env; paste the same value here.
+      - key: DATABASE_URL
+        sync: false
+
+      # --- auth ------------------------------------------------------------
+      # JWT_SECRET and JWT_REFRESH_SECRET must be the same values the existing
+      # tokens were signed with, or every logged-in session is invalidated.
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+
+      # --- CORS ------------------------------------------------------------
+      # MUST be set to the deployed dashboard origin(s), comma-separated, with
+      # no trailing slash. CORS_ORIGINS declared in backend/.env was previously
+      # read by nothing; it is now wired up in src/main.ts. Until this matches
+      # the real dashboard URL, the browser blocks every API call.
+      - key: CORS_ORIGINS
+        sync: false
+
+      # --- geofencing / biometrics ----------------------------------------
+      # DEV_SKIP_GEOFENCE_VALIDATION must stay "false": it is the one check
+      # that genuinely runs, and turning it on makes check-in accept any
+      # location. Geofencing is enforced in PostGIS and needs no paid service.
+      - key: DEV_SKIP_GEOFENCE_VALIDATION
+        value: "false"
+
+      # DEV_SKIP_BIOMETRIC_VERIFICATION must be "true" on this deployment.
+      #
+      # The name is misleading -- it is not a dev-only nicety. The server logs
+      # "No face matching service available. Biometric verification disabled."
+      # at startup, because BiometricService picks its backend at construction
+      # (priority: AWS Rekognition > InsightFace > none) and neither is
+      # configured: AWS_ACCESS_KEY_ID is empty in backend/.env, and
+      # FACE_MATCH_SERVICE_URL is commented out.
+      #
+      # With this set to "false", verifyFace() throws
+      # "Face matching service not available. Please configure AWS Rekognition
+      # or InsightFace." and EVERY check-in and check-out is rejected with a
+      # 401. Verified against the running server, not inferred.
+      #
+      # Set it to "false" only after configuring one of those services:
+      # AWS Rekognition is billed per image and InsightFace needs a host to
+      # run inference on. Both are out of scope for a zero-budget deployment.
+      #
+      # Consequence, stated plainly: without it, check-in verifies WHERE
+      # (geofence) but not WHO (face). An employee's credentials alone are
+      # enough to check in from anywhere inside the fence.
+      - key: DEV_SKIP_BIOMETRIC_VERIFICATION
+        value: "true"
+
+      - key: FACE_MATCH_THRESHOLD
+        value: "0.85"
+      - key: LIVENESS_THRESHOLD
+        value: "0.7"
+      - key: MAX_GEOFENCE_DISTANCE_M
+        value: "1000"
+      - key: MAX_TIMESTAMP_DRIFT_SEC
+        value: "300"
+      - key: MAX_SHIFT_HOURS
+        value: "16"
+
+      # --- signing / encryption -------------------------------------------
+      - key: HMAC_DEVICE_SIGNING_KEY
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+
+      # --- rate limiting ---------------------------------------------------
+      - key: RATE_LIMIT
+        value: "100"
+
+      # --- retention -------------------------------------------------------
+      - key: BIOMETRIC_RETENTION_DAYS
+        value: "365"
+      - key: AUDIT_LOG_RETENTION_DAYS
+        value: "2555"
+
+      # --- feature flags ---------------------------------------------------
+      - key: ENABLE_OFFLINE_SYNC
+        value: "true"
+      - key: ENABLE_MOCK_LOCATION_DETECTION
+        value: "true"
+      - key: ENABLE_ROOT_JAILBREAK_DETECTION
+        value: "true"
+      - key: ENABLE_PAYROLL_AUTO_EXPORT
+        value: "false"
