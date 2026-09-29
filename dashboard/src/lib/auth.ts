@@ -49,18 +49,19 @@ export function isEmployeeRole(role: string | null | undefined): boolean {
 }
 
 /**
- * Where an account belongs. Used to turn a sign-in at the wrong door into a
- * redirect to the right one rather than a dead end.
+ * Where an account belongs, so signing in at the single login page can land
+ * each role on its own surface.
+ *
+ * An unrecognised role returns '/', not '/checkin'. Returning the check-in
+ * page for "not back office" would be a redirect loop: /checkin sees a
+ * non-employee role, asks for its home, and gets /checkin back. The sign-in
+ * page is the only safe landing because it is the one page that never
+ * redirects on the basis of a role.
  */
 export function homeForRole(role: string | null | undefined): string {
-  return isBackOfficeRole(role) ? '/dashboard' : '/checkin';
-}
-
-/** A human label for a role, for the one-line explanation shown on rejection. */
-export function describeRole(role: string | null | undefined): string {
-  if (isBackOfficeRole(role)) return 'an administrator account';
-  if (isEmployeeRole(role)) return 'an employee account';
-  return 'an account that is neither administrator nor employee';
+  if (isBackOfficeRole(role)) return '/dashboard';
+  if (isEmployeeRole(role)) return '/checkin';
+  return '/';
 }
 
 export function displayName(user: SessionUser | null): string {

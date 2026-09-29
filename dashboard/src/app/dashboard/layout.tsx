@@ -15,7 +15,7 @@ import {
   Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { clearSession, isBackOfficeRole, readSession } from '@/lib/auth';
+import { clearSession, homeForRole, isBackOfficeRole, readSession } from '@/lib/auth';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -46,13 +46,13 @@ export default function DashboardLayout({
     /*
      * A token is not enough to be here, and this guard used to stop there:
      * anything with a stored token reached the whole back office, so an
-     * employee who signed in at the wrong door saw every page. The role is
-     * what decides who this surface is for. An employee session is cleared
-     * and sent to the check-in page rather than left half-signed-in.
+     * employee who signed in saw every page.
+     *
+     * A valid non-back-office session is sent to its own screen rather than
+     * signed out -- they are signed in, just not here.
      */
     if (!isBackOfficeRole(session.user.role)) {
-      clearSession();
-      router.replace('/checkin');
+      router.replace(homeForRole(session.user.role));
       return;
     }
 

@@ -1,52 +1,58 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
-import { clearSession, describeRole, extractSession, isBackOfficeRole, saveSession } from '@/lib/auth';
+import { clearSession, extractSession, homeForRole, saveSession } from '@/lib/auth';
 import { AlertCircle } from 'lucide-react';
 
+/**
+ * The single sign-in page.
+ *
+ * This is the only front door. Administrators and employees both sign in here,
+ * and the role decides where they land: back-office accounts go to the
+ * dashboard, employees go to the check-in screen.
+ *
+ * There used to be a second door at /checkin with its own login form, and the
+ * two disagreed about who they admitted -- this page sent every role into the
+ * admin panel. One door with a role-routed landing removes that class of bug
+ * entirely.
+ */
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  /** Set when a valid employee signs in at this door, so we can offer the
-   *  right link instead of just refusing. */
-  const [wrongDoor, setWrongDoor] = useState(false);
   const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError('');
-    setWrongDoor(false);
 
     try {
       const response = await api.login(email, password);
       const { accessToken, refreshToken, user } = extractSession(response);
 
+      const destination = homeForRole(user.role);
+
       /*
-       * This is the back-office door. An employee account that signs in here
-       * has to be turned away: the credentials are valid, but the dashboard is
-       * not their surface, and previously this page redirected every role
-       * straight into the admin panel.
+       * A role with no screen of its own. Refusing here is clearer than
+       * storing a session and landing back on this page with no explanation.
        */
-      if (!isBackOfficeRole(user.role)) {
+      if (destination === '/') {
         clearSession();
-        setWrongDoor(true);
         setError(
-          `You signed in with ${describeRole(user.role)}. This page is for administrators — employee accounts check in from the attendance page.`
+          'This account has a role with no matching screen. Ask an administrator to check it.'
         );
         return;
       }
 
       saveSession(accessToken, refreshToken, user);
-      router.push('/dashboard');
+      router.push(destination);
     } catch (err: any) {
       setError(err.message || 'Login failed. Please check your credentials.');
     } finally {
@@ -103,7 +109,7 @@ export default function LoginPage() {
                 />
               </div>
             </div>
-            <CardTitle className="text-xl text-center">Administrator sign in</CardTitle>
+            <CardTitle className="text-xl text-center">Sign in</CardTitle>
             <CardDescription className="text-center">
               Manage attendance for your field workforce
             </CardDescription>
@@ -116,21 +122,7 @@ export default function LoginPage() {
                   className="flex items-start gap-2 p-3 text-sm text-critical-600 bg-critical-50 border border-critical-200 rounded-lg"
                 >
                   <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                  <span>
-                    {error}
-                    {wrongDoor && (
-                      <>
-                        {' '}
-                        <Link
-                          href="/checkin"
-                          className="font-medium underline underline-offset-2"
-                        >
-                          Go to check-in
-                        </Link>
-                        .
-                      </>
-                    )}
-                  </span>
+                  <span>{error}</span>
                 </div>
               )}
               <div className="space-y-1.5">
@@ -182,14 +174,11 @@ export default function LoginPage() {
               administrator address and password on the sign-in page. This page
               is served from a public URL, so that is a published admin
               credential, not a convenience. Removed deliberately.
+
+              The "employees sign in at the check-in page" pointer that briefly
+              replaced it is also gone: this is now the only sign-in page for
+              both roles, so there is no second door to send anyone to.
             */}
-            <div className="mt-5 pt-4 border-t border-silver-200 text-center text-xs text-silver-800">
-              Employees sign in at{' '}
-              <Link href="/checkin" className="font-medium text-brand-800 underline underline-offset-2">
-                the check-in page
-              </Link>
-              .
-            </div>
           </CardContent>
         </Card>
       </div>

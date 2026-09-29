@@ -31,15 +31,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { api } from '@/lib/api';
 import {
@@ -47,10 +44,9 @@ import {
   clearSession,
   displayName,
   employeeIdOf,
-  extractSession,
+  homeForRole,
   isEmployeeRole,
   readSession,
-  saveSession,
 } from '@/lib/auth';
 import {
   AlertCircle,
@@ -68,7 +64,13 @@ interface SiteOption {
   geofenceRadiusM?: number | null;
 }
 
-type Stage = 'booting' | 'login' | 'ready' | 'done';
+/**
+ * `booting` is the session check. There is deliberately no `login` stage: this
+ * page has no sign-in form of its own. Signing in happens once, at "/", which
+ * routes here by role. Reaching this page without an employee session sends
+ * the visitor back to that single sign-in page.
+ */
+type Stage = 'booting' | 'ready' | 'done';
 
 /** `GET /sites` and `GET /employees` return a bare array, but the API client
  *  types them as a union with a paginated envelope. Normalise once, here. */
@@ -101,14 +103,10 @@ function describeGeoError(err: unknown): string {
 }
 
 export default function CheckInPage() {
+  const router = useRouter();
   const [stage, setStage] = useState<Stage>('booting');
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
-
-  // Login form
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loggingIn, setLoggingIn] = useState(false);
 
   // Context
   const [sites, setSites] = useState<SiteOption[]>([]);
@@ -163,26 +161,27 @@ export default function CheckInPage() {
   useEffect(() => {
     const session = readSession();
 
+    // Nothing stored: this page is not a front door. The single sign-in page
+    // at "/" is, and it routes back here for an employee account.
     if (!session) {
-      setStage('login');
+      router.replace('/');
       return;
     }
 
     /*
-     * This is the employee door. A back-office account that somehow ends up
-     * holding a stored session here is signed out rather than shown a check-in
-     * screen it has no employee record for.
+     * A valid session, but not an employee one. Send them to their own screen
+     * rather than signing them out -- they are signed in, just not here. An
+     * administrator has no employee record, so there is nothing to check in.
      */
     if (!isEmployeeRole(session.user.role)) {
-      clearSession();
-      setStage('login');
+      router.replace(homeForRole(session.user.role));
       return;
     }
 
     setToken(session.token);
     setUser(session.user);
     setStage('ready');
-  }, []);
+  }, [router]);
 
   // Start waking the backend immediately. On a free tier that stops idle
   // containers this runs while the worker signs in and frames their face, so
@@ -321,46 +320,6 @@ export default function CheckInPage() {
 
   // ---- Actions -------------------------------------------------------------
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoggingIn(true);
-    setError('');
-    try {
-      const response = await api.login(email, password);
-      const { accessToken, refreshToken, user: nextUser } = extractSession(response);
-
-      /*
-       * Employees only. An administrator account is not an employee and has
-       * nothing to clock in for, so it is refused before the session is
-       * written -- the dashboard at "/" is the other door.
-       */
-      if (!isEmployeeRole(nextUser.role)) {
-        setError(
-          'This is the employee check-in page. Administrator accounts sign in at the dashboard instead.'
-        );
-        return;
-      }
-
-      // An employee-role account with no employee record has nothing to check
-      // in against, so say that plainly instead of failing on a missing id.
-      if (!employeeIdOf(nextUser)) {
-        setError(
-          'This account is not linked to an employee record, so it cannot check in. Ask an administrator to link it.'
-        );
-        return;
-      }
-
-      saveSession(accessToken, refreshToken, nextUser);
-      setToken(accessToken);
-      setUser(nextUser);
-      setStage('ready');
-    } catch (err) {
-      setError((err as Error).message || 'Sign in failed.');
-    } finally {
-      setLoggingIn(false);
-    }
-  };
-
   const handleSignOut = () => {
     stopCamera();
     clearSession();
@@ -368,7 +327,8 @@ export default function CheckInPage() {
     setUser(null);
     setResult(null);
     setError('');
-    setStage('login');
+    // Back to the single sign-in page; this page cannot sign anyone in.
+    router.replace('/');
   };
 
   const handleSubmit = async () => {
@@ -473,70 +433,10 @@ export default function CheckInPage() {
           </div>
         )}
 
-        {/* ---- Login ---- */}
-        {stage === 'login' && (
-          <Card className="border-silver-200 shadow-sm">
-            <CardHeader className="space-y-1">
-              <CardTitle className="text-xl text-center">Check in</CardTitle>
-              <CardDescription className="text-center">
-                Sign in with your employee account
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleLogin} className="space-y-4">
-                {error && (
-                  <div
-                    role="alert"
-                    className="flex items-start gap-2 p-3 text-sm text-critical-600 bg-critical-50 border border-critical-200 rounded-lg"
-                  >
-                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-                <div className="space-y-1.5">
-                  <label htmlFor="email" className="text-sm font-medium text-ink">
-                    Email
-                  </label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    disabled={loggingIn}
-                    autoComplete="username"
-                    placeholder="juan.delacruz@klassic.ph"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label htmlFor="password" className="text-sm font-medium text-ink">
-                    Password
-                  </label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    disabled={loggingIn}
-                    autoComplete="current-password"
-                    placeholder="••••••••"
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={loggingIn}>
-                  {loggingIn ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="animate-spin h-4 w-4" />
-                      Signing in...
-                    </span>
-                  ) : (
-                    'Sign In'
-                  )}
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-        )}
+        {/*
+          No sign-in form here. This page shows a spinner while it checks the
+          session, then either the check-in screen or a redirect to "/".
+        */}
 
         {/* ---- Booting ---- */}
         {stage === 'booting' && (
