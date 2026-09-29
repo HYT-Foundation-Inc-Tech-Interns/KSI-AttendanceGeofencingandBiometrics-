@@ -141,7 +141,19 @@ export default function CheckInPage() {
     timestamp: string;
   } | null>(null);
 
-  const secure = typeof window !== 'undefined' && window.isSecureContext;
+  /*
+   * Secure-context flag, resolved *after* mount rather than during render.
+   *
+   * `window.isSecureContext` cannot be read while server-rendering, and
+   * localhost IS a secure context. Computing this inline during render made the
+   * server emit the "not on a secure connection" banner and then the browser
+   * remove it on hydration -- a hydration mismatch, confirmed by the banner
+   * appearing in the server-rendered HTML of a localhost request.
+   *
+   * Starting from `true` (no banner) keeps the first client render identical to
+   * the server's; the real value is applied immediately afterwards.
+   */
+  const [secure, setSecure] = useState(true);
   const employeeId = employeeIdOf(user);
   const nextAction: 'check_in' | 'check_out' =
     lastEventType === 'check_in' ? 'check_out' : 'check_in';
@@ -185,6 +197,7 @@ export default function CheckInPage() {
   // the submit itself rarely waits for a cold start. See api.warmUp().
   useEffect(() => {
     void api.warmUp();
+    setSecure(window.isSecureContext);
   }, []);
 
   // Always release the camera when leaving the page, or the recording indicator
