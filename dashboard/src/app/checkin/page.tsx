@@ -41,6 +41,12 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
+// `MapPin` is already the lucide icon in this file, so the map's pin type
+// arrives aliased.
+import GeoMap, {
+  type MapFence,
+  type MapPin as GeoMapPin,
+} from '@/components/geo-map';
 import { ApiError, api } from '@/lib/api';
 import {
   FaceCaptureResult,
@@ -178,6 +184,38 @@ export default function CheckInPage() {
   const [lastEventType, setLastEventType] = useState<string | null>(null);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
   const [loadingContext, setLoadingContext] = useState(false);
+
+  /*
+   * Location preview.
+   *
+   * The submit path reads the position again and the server validates it
+   * again -- nothing here is trusted. This exists so a worker standing outside
+   * the fence finds out while they can still walk closer, instead of after
+   * they have posed for a photo. The verdict comes from the same
+   * `validateGeofence` endpoint the submit consults, so the map cannot promise
+   * something the punch will then refuse.
+   */
+  const [geofence, setGeofence] = useState<{
+    site_id: string;
+    site_name: string;
+    geofence_center?: { latitude: number; longitude: number };
+    geofence_radius_m?: number | null;
+    geofence_polygon?: { type: 'Polygon'; coordinates: number[][][] } | null;
+  } | null>(null);
+  const [myPosition, setMyPosition] = useState<{
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+  } | null>(null);
+  const [geofenceCheck, setGeofenceCheck] = useState<{
+    /* Carries its own site, so switching sites cannot leave a stale verdict
+       on screen while the new one is still being fetched. */
+    siteId: string;
+    withinGeofence: boolean;
+    distance?: number;
+  } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState('');
 
   // Capture
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -616,6 +654,83 @@ export default function CheckInPage() {
       });
     });
 
+  /**
+   * Read the position and ask the server where it falls, for display only.
+   *
+   * `validateGeofence` throws for a site with no geofence configured. That is
+   * not an error worth showing -- it means there is no boundary to draw -- so
+   * the verdict is cleared and the map falls back to showing the position on
+   * its own.
+   */
+  const refreshLocation = useCallback(async () => {
+    if (!token || !siteId) return;
+
+    setLocating(true);
+    setLocationError('');
+
+    try {
+      const position = await readPosition();
+      const { latitude, longitude, accuracy } = position.coords;
+      setMyPosition({ latitude, longitude, accuracy });
+
+      try {
+        const check = await api.validateGeofence(token, siteId, latitude, longitude);
+        setGeofenceCheck({
+          siteId,
+          withinGeofence: check.withinGeofence,
+          distance: check.distance,
+        });
+      } catch {
+        setGeofenceCheck(null);
+      }
+    } catch (err) {
+      setLocationError(describeGeoError(err));
+    } finally {
+      setLocating(false);
+    }
+    // `readPosition` closes over browser APIs only, not over props or state, so
+    // it is not a reactive dependency of this callback.
+  }, [token, siteId]);
+
+  /** The selected site's fence, to draw. Never used to decide anything. */
+  useEffect(() => {
+    if (!token || !siteId) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const data = await api.getSiteGeofence(token, siteId);
+        if (!cancelled) setGeofence(data);
+      } catch {
+        if (!cancelled) setGeofence(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token, siteId]);
+
+  /*
+   * Ask for the position as soon as the screen is usable.
+   *
+   * The punch needs the location regardless, so prompting here is the same
+   * conversation held earlier -- and earlier is the only moment it can still
+   * change the worker's mind about walking closer.
+   *
+   * Deferred by a tick because `refreshLocation` sets the "locating" flag
+   * before its first await; calling it straight from the effect body would be
+   * a synchronous setState during an effect, which cascades a render for
+   * nothing.
+   */
+  useEffect(() => {
+    if (stage !== 'ready' || !secure || !siteId || !token) return;
+
+    const timer = setTimeout(() => void refreshLocation(), 0);
+    return () => clearTimeout(timer);
+  }, [stage, secure, siteId, token, refreshLocation]);
+
   // ---- Actions -------------------------------------------------------------
 
   const handleSignOut = () => {
@@ -847,6 +962,77 @@ export default function CheckInPage() {
     </div>
   );
 
+  /*
+   * Both the fence and the verdict are tied to the site they were fetched
+   * for. Without that check, switching sites would leave the previous
+   * boundary on screen and a stale "you are inside" next to it -- which is
+   * exactly the reassurance that would send someone away from the fence.
+   */
+  const check = geofenceCheck && geofenceCheck.siteId === siteId ? geofenceCheck : null;
+
+  const mapFences: MapFence[] = [];
+  if (geofence && geofence.site_id === siteId) {
+    const ring = geofence.geofence_polygon?.coordinates?.[0];
+    if (ring && ring.length >= 3) {
+      mapFences.push({
+        id: geofence.site_id,
+        name: geofence.site_name,
+        latitude: geofence.geofence_center?.latitude ?? 0,
+        longitude: geofence.geofence_center?.longitude ?? 0,
+        polygon: ring,
+      });
+    } else if (geofence.geofence_center) {
+      mapFences.push({
+        id: geofence.site_id,
+        name: geofence.site_name,
+        latitude: geofence.geofence_center.latitude,
+        longitude: geofence.geofence_center.longitude,
+        radiusM: geofence.geofence_radius_m ?? null,
+      });
+    }
+  }
+
+  const mapPins: GeoMapPin[] = myPosition
+    ? [
+        {
+          id: 'me',
+          latitude: myPosition.latitude,
+          longitude: myPosition.longitude,
+          label: 'You are here',
+          // Falls back to the neutral "self" pin until the server has judged
+          // this position, so an unverified point is never drawn as "inside".
+          tone: !check ? 'self' : check.withinGeofence ? 'inside' : 'outside',
+          detail:
+            check && typeof check.distance === 'number'
+              ? `${Math.round(check.distance)} m from the site centre`
+              : undefined,
+        },
+      ]
+    : [];
+
+  const locationVerdict =
+    !myPosition || !check ? null : check.withinGeofence ? (
+      <div className="flex items-start gap-2 p-3 text-sm text-brand-700 bg-brand-50 border border-brand-200 rounded-lg">
+        <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
+        <span>
+          You are inside {selectedSite?.name ?? 'the site'}
+          {typeof check.distance === 'number'
+            ? `, about ${Math.round(check.distance)} m from the centre`
+            : ''}
+          .
+        </span>
+      </div>
+    ) : (
+      <div className="flex items-start gap-2 p-3 text-sm text-critical-600 bg-critical-50 border border-critical-200 rounded-lg">
+        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+        <span>
+          You are about {Math.round(check.distance ?? 0)} m from{' '}
+          {selectedSite?.name ?? 'the site'} — outside its boundary. Move closer
+          before checking in.
+        </span>
+      </div>
+    );
+
   return (
     <div className="min-h-screen bg-page flex flex-col items-center p-4 py-8">
       <div className="w-full max-w-md">
@@ -1075,6 +1261,61 @@ export default function CheckInPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {/*
+              Where the worker is, relative to the site they are punching at.
+              Drawn above the camera on purpose: someone standing outside the
+              fence should learn that before they pose for a photo, not after
+              the upload is refused.
+            */}
+            {siteId && (
+              <Card className="border-silver-200 shadow-sm">
+                <CardContent className="pt-5 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-ink">Your location</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={refreshLocation}
+                      disabled={locating}
+                      title="Update my location"
+                    >
+                      {locating ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                      <span className="ml-1.5 text-xs">Update</span>
+                    </Button>
+                  </div>
+
+                  {locationVerdict}
+
+                  {locationError ? (
+                    <div className="flex items-start gap-2 p-3 text-sm text-warning-700 bg-warning-50 border border-warning-200 rounded-lg">
+                      <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                      <span>{locationError}</span>
+                    </div>
+                  ) : (
+                    <GeoMap
+                      fences={mapFences}
+                      pins={mapPins}
+                      height={220}
+                      emptyMessage="Finding your position…"
+                    />
+                  )}
+
+                  {myPosition && (
+                    <p className="text-xs text-muted">
+                      Accurate to about {Math.round(myPosition.accuracy)} m.
+                      {selectedSite?.name
+                        ? ` Measured against ${selectedSite.name}.`
+                        : ''}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             <Card className="border-silver-200 shadow-sm overflow-hidden">
               <CardContent className="p-0">

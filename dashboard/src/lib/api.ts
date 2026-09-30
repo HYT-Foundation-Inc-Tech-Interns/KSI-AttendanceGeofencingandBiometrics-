@@ -117,6 +117,52 @@ export interface AttendanceNotification {
 }
 
 /**
+ * A site's geofence, shaped for drawing rather than for editing.
+ *
+ * `polygon` is the outer ring as `[longitude, latitude]` pairs, straight from
+ * GeoJSON, so a map can pass it through without re-deriving anything.
+ */
+export interface MapSite {
+  id: string;
+  name: string;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  radiusM: number | null;
+  polygon: number[][] | null;
+}
+
+/**
+ * An employee's last known position.
+ *
+ * `status` is decided by the server in PostGIS, never by the browser, so the
+ * map cannot disagree with the check-in that was actually enforced.
+ * `lastSeenAt` is not decoration: there is no live tracking, so a pin is only
+ * as current as the punch behind it.
+ */
+export interface MapEmployee {
+  id: string;
+  fullName: string;
+  employeeCode: string | null;
+  siteId: string | null;
+  siteName: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  lastSeenAt: string | null;
+  eventType: 'check_in' | 'check_out' | null;
+  accuracyM: number | null;
+  isMockLocation: boolean;
+  status: 'inside' | 'outside' | 'unknown';
+  distanceM: number | null;
+}
+
+export interface MapOverview {
+  generatedAt: string;
+  sites: MapSite[];
+  employees: MapEmployee[];
+}
+
+/**
  * Build a query string, dropping empty values.
  *
  * `new URLSearchParams({ status: undefined })` serialises to the literal string
@@ -735,6 +781,39 @@ export class ApiClient {
       reason: string;
       timestamp: string;
     }>>('/dashboard/flagged-events', { token });
+  }
+
+  /**
+   * Site geofences plus each active employee's last known position.
+   *
+   * Read by the admin map. The inside/outside verdict is the server's, so the
+   * pin an admin sees is the same judgement that would have accepted or
+   * refused the punch.
+   */
+  async getMapOverview() {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    if (!token) {
+      throw new Error('No access token found');
+    }
+    return this.request<MapOverview>('/dashboard/map', { token });
+  }
+
+  /**
+   * A single site's geofence, for drawing the boundary on the check-in screen.
+   *
+   * Deliberately the un-guarded endpoint: an employee has to be able to see
+   * the fence they are being measured against, and this response is display
+   * data only -- the server still validates the punch itself.
+   */
+  async getSiteGeofence(token: string, siteId: string) {
+    return this.request<{
+      site_id: string;
+      site_name: string;
+      timezone?: string;
+      geofence_center?: { latitude: number; longitude: number };
+      geofence_radius_m?: number | null;
+      geofence_polygon?: { type: 'Polygon'; coordinates: number[][][] } | null;
+    }>(`/sites/${siteId}/geofence`, { token });
   }
 }
 

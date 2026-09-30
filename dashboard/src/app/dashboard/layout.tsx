@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Users,
   MapPin,
+  Map as MapIcon,
   ClipboardList,
   FileText,
   LogOut,
@@ -19,6 +20,7 @@ import { clearSession, homeForRole, isBackOfficeRole, readSession } from '@/lib/
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { name: 'Live Map', href: '/dashboard/map', icon: MapIcon },
   { name: 'Attendance', href: '/dashboard/attendance', icon: ClipboardList },
   { name: 'Employees', href: '/dashboard/employees', icon: Users },
   { name: 'Sites', href: '/dashboard/sites', icon: MapPin },

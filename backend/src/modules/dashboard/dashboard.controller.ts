@@ -30,4 +30,16 @@ export class DashboardController {
     const organizationId = req.user.organizationId;
     return this.dashboardService.getFlaggedEvents(organizationId);
   }
+
+  /**
+   * Site geofences plus every active employee's last known position, for the
+   * admin map. Positions come from punches, so each one carries the time it
+   * was taken rather than being presented as live tracking.
+   */
+  @Get('map')
+  @Roles(UserRole.ADMIN, UserRole.HR)
+  async getMapOverview(@Request() req: any) {
+    const organizationId = req.user.organizationId;
+    return this.dashboardService.getMapOverview(organizationId);
+  }
 }
