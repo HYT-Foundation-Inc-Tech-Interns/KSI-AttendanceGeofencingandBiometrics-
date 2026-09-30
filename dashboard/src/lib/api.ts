@@ -154,6 +154,20 @@ export interface MapEmployee {
   isMockLocation: boolean;
   status: 'inside' | 'outside' | 'unknown';
   distanceM: number | null;
+  /**
+   * The face to draw on this person's pin, as a JPEG data URL, or null.
+   *
+   * Absent for anyone who enrolled before images were stored and has no punch
+   * capture either -- currently half the roster -- so every consumer has to
+   * handle null rather than assume a face exists.
+   */
+  faceImage: string | null;
+  /**
+   * Where `faceImage` came from. `enrolment` is the biometric they saved as
+   * the basis of their access; `capture` is a photo taken at a punch. The two
+   * mean different things, so the UI should not present them as equivalent.
+   */
+  faceSource: 'enrolment' | 'capture' | null;
 }
 
 export interface MapOverview {

@@ -37,6 +37,13 @@ export default function MapPage() {
   const [error, setError] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [onlyOutside, setOnlyOutside] = useState(false);
+  /*
+   * Faces default to on: the map is already admin/HR only, and the same faces
+   * are already visible in the attendance table. The toggle exists because
+   * this is the one screen likely to be on a shared or projected display,
+   * where an admin wants to hide them without leaving the page.
+   */
+  const [showFaces, setShowFaces] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,8 +141,9 @@ export default function MapPage() {
           label: e.fullName,
           tone: e.status as PinTone,
           detail: `${e.siteName ?? 'No site'} \u00b7 ${describePosition(e)}`,
+          faceUrl: showFaces ? e.faceImage : null,
         })),
-    [employees],
+    [employees, showFaces],
   );
 
   const visible = onlyOutside
@@ -197,7 +205,21 @@ export default function MapPage() {
         <Card className="lg:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <CardTitle>Site boundaries</CardTitle>
-            <MapLegend />
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowFaces((v) => !v)}
+                aria-pressed={showFaces}
+                className={`text-xs rounded-full border px-2.5 py-1 transition-colors ${
+                  showFaces
+                    ? 'bg-brand-50 border-silver-200 text-brand-800'
+                    : 'border-silver-200 text-silver-800 hover:bg-silver-50'
+                }`}
+              >
+                Show faces
+              </button>
+              <MapLegend />
+            </div>
           </CardHeader>
           <CardContent>
             <GeoMap
@@ -208,6 +230,12 @@ export default function MapPage() {
               onPinClick={(id) => setSelectedId(id)}
               emptyMessage="No employee has checked in yet, so there is nothing to place."
             />
+            <p className="text-xs text-silver-800 mt-3">
+              A pin with a face uses the enrolment photo where one exists, and
+              the most recent punch capture otherwise. Anyone with neither keeps
+              a symbol pin, and the ring still carries the inside/outside
+              verdict either way.
+            </p>
           </CardContent>
         </Card>
 

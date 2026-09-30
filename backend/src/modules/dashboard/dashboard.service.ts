@@ -154,6 +154,18 @@ export class DashboardService {
      * measure degrees, where a 100 m fence is about 0.0009 and every point on
      * earth reads as "inside".
      */
+    /*
+     * The face on each pin is the enrolment biometric where one exists -- the
+     * image the employee themselves saved as the basis of their access, which
+     * never expires. It falls back to the most recent punch capture, which
+     * keeps a face on anyone enrolled before images were being stored, at the
+     * cost of that pin going faceless once biometric retention (30 days)
+     * removes the capture.
+     *
+     * `face_source` reports which one was used rather than letting the UI
+     * imply every pin is an enrolment, because those two images mean
+     * different things: one is a claim, the other is evidence.
+     */
     const rows: Array<{
       employee_id: string;
       full_name: string;
@@ -166,6 +178,8 @@ export class DashboardService {
       event_type: string | null;
       accuracy_m: string | null;
       is_mock_location: boolean | null;
+      face_image: string | null;
+      face_source: string | null;
       within_geofence: boolean | null;
       distance_m: string | null;
     }> = await this.employeeRepository.query(
@@ -182,6 +196,12 @@ export class DashboardService {
         last_seen.event_type          AS event_type,
         last_seen.gps_accuracy_meters AS accuracy_m,
         last_seen.is_mock_location    AS is_mock_location,
+        COALESCE(enrol.face_image, last_seen.capture_image) AS face_image,
+        CASE
+          WHEN enrol.face_image IS NOT NULL THEN 'enrolment'
+          WHEN last_seen.capture_image IS NOT NULL THEN 'capture'
+          ELSE NULL
+        END                           AS face_source,
         CASE
           WHEN s.geofence_center IS NOT NULL AND s.geofence_radius_m IS NOT NULL
             THEN ST_DWithin(s.geofence_center, last_seen.gps_point, s.geofence_radius_m)
@@ -198,12 +218,21 @@ export class DashboardService {
       LEFT JOIN sites s ON s.id = e.site_id
       LEFT JOIN LATERAL (
         SELECT ae.gps_point, ae.server_timestamp, ae.event_type,
-               ae.gps_accuracy_meters, ae.is_mock_location
+               ae.gps_accuracy_meters, ae.is_mock_location, ae.capture_image
         FROM attendance_events ae
         WHERE ae.employee_id = e.id
         ORDER BY ae.server_timestamp DESC
         LIMIT 1
       ) last_seen ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT de.enrollment_image AS face_image
+        FROM device_enrollments de
+        WHERE de.employee_id = e.id
+          AND de.is_revoked = false
+          AND de.enrollment_image IS NOT NULL
+        ORDER BY de.enrolled_at DESC
+        LIMIT 1
+      ) enrol ON TRUE
       WHERE e.organization_id = $1
         AND e.status = 'active'
       ORDER BY e.full_name ASC
@@ -263,6 +292,11 @@ export class DashboardService {
           status,
           distanceM:
             row.distance_m === null ? null : Math.round(Number(row.distance_m)),
+          faceImage: row.face_image ?? null,
+          faceSource:
+            row.face_source === 'enrolment' || row.face_source === 'capture'
+              ? row.face_source
+              : null,
         };
       }),
     };

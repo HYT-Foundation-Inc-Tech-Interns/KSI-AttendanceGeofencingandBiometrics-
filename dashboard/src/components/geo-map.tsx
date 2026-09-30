@@ -39,6 +39,13 @@ export interface MapPin {
   label: string;
   tone: PinTone;
   detail?: string;
+  /**
+   * This person's face as a JPEG data URL, or null/absent to draw a glyph pin.
+   *
+   * Half the roster has no face on file, so this is genuinely optional and the
+   * glyph pin is a first-class outcome rather than an error state.
+   */
+  faceUrl?: string | null;
 }
 
 interface GeoMapProps {
@@ -53,8 +60,12 @@ interface GeoMapProps {
   emptyMessage?: string;
 }
 
-/** Fallback view: the Paltok site, so an empty map is not in the ocean. */
-const DEFAULT_CENTER: [number, number] = [14.642702333, 121.024668975];
+/**
+ * Fallback view: the Paltok site as it is currently fenced, so an empty map is
+ * not in the ocean. This only shows before the first data arrives -- once there
+ * is anything to draw, the bounds come from the real coordinates.
+ */
+const DEFAULT_CENTER: [number, number] = [14.642592, 121.024509];
 
 /**
  * Pin styling per tone.
@@ -75,8 +86,19 @@ const TONES: Record<
 
 const FENCE_STROKE = '#285709';
 
-/** A teardrop pin whose tip sits on the coordinate. */
-function pinHtml(tone: PinTone): string {
+/**
+ * Pin geometry, per shape.
+ *
+ * A pin carrying a face is drawn larger, because a face only earns its place
+ * if it is big enough to recognise at a glance. The tip sits on the coordinate
+ * in both shapes, so a face pin is no less precise than a glyph pin -- it just
+ * takes up more room above the point.
+ */
+const PIN_GLYPH = { width: 30, height: 40, anchorX: 15, anchorY: 40 };
+const PIN_FACE = { width: 40, height: 54, anchorX: 20, anchorY: 54 };
+
+/** A teardrop pin whose tip sits on the coordinate, marked with a glyph. */
+function glyphPinHtml(tone: PinTone): string {
   const t = TONES[tone];
   return `
     <div style="position:relative;width:30px;height:40px;">
@@ -87,6 +109,41 @@ function pinHtml(tone: PinTone): string {
         <text x="15" y="18.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif"
               font-size="12" font-weight="700" fill="#ffffff">${t.glyph}</text>
       </svg>
+    </div>
+  `;
+}
+
+/**
+ * A teardrop pin with the person's face in the head.
+ *
+ * The face is an HTML `<img>` with `border-radius: 50%` layered over the SVG
+ * rather than an SVG `<image>` inside a `<clipPath>`. A clip path needs an
+ * `id`, every marker injects its own markup into the same document, and
+ * duplicate ids resolve to whichever element the browser saw first -- so the
+ * pins would silently steal each other's clips. A CSS radius has no such
+ * shared state.
+ *
+ * The teardrop path is the 40x54 form of the same shape: a head circle centred
+ * on (20, 18) with r = 16.5, and a tip at (20, 52). The two straight edges are
+ * tangents from the tip, meeting the circle at +/-60.96 degrees, which is
+ * `acos(16.5 / 34)` -- hence the two arc endpoints at x = 34.43 and x = 5.57.
+ *
+ * The status glyph survives as a badge on the rim. A face says who, never
+ * whether they were inside, and status in this app is not allowed to rest on
+ * colour alone.
+ */
+function facePinHtml(tone: PinTone, faceUrl: string): string {
+  const t = TONES[tone];
+  return `
+    <div style="position:relative;width:40px;height:54px;">
+      <svg width="40" height="54" viewBox="0 0 40 54" xmlns="http://www.w3.org/2000/svg"
+           style="position:absolute;left:0;top:0;">
+        <path d="M20 1.5A16.5 16.5 0 0 1 34.43 26L20 52 5.57 26A16.5 16.5 0 0 1 20 1.5Z"
+              fill="${t.fill}" stroke="#ffffff" stroke-width="2.5"/>
+      </svg>
+      <img src="${faceUrl}" alt=""
+           style="position:absolute;left:6px;top:4px;width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid #ffffff;box-sizing:border-box;"/>
+      <span style="position:absolute;left:21px;top:20px;width:15px;height:15px;border-radius:50%;background:${t.fill};border:1.5px solid #ffffff;color:#ffffff;font:700 10px/15px Arial,Helvetica,sans-serif;text-align:center;box-sizing:content-box;">${t.glyph}</span>
     </div>
   `;
 }
@@ -128,7 +185,16 @@ export default function GeoMap({
    */
   const signature = JSON.stringify({
     fences,
-    pins,
+    pins: pins.map((pin) => ({
+      ...pin,
+      /*
+       * Only a tail of the data URL enters the signature. A face is a base64
+       * JPEG of up to ~21 KB, and stringifying eight of them on every render
+       * to decide whether anything moved is a lot of work to answer a question
+       * a few characters already answer.
+       */
+      faceUrl: pin.faceUrl ? pin.faceUrl.slice(-24) : '',
+    })),
     focus,
     zoom,
   });
@@ -216,23 +282,43 @@ export default function GeoMap({
               continue;
             }
 
+            /*
+             * Only a data URL that really is an image is trusted into the
+             * markup. It comes from our own database, but it is interpolated
+             * into HTML, so it gets a shape check rather than the benefit of
+             * the doubt.
+             */
+            const face =
+              typeof pin.faceUrl === 'string' &&
+              pin.faceUrl.startsWith('data:image/')
+                ? pin.faceUrl
+                : null;
+
+            const geo = face ? PIN_FACE : PIN_GLYPH;
+
             const marker = leaflet.marker([pin.latitude, pin.longitude], {
               icon: leaflet.divIcon({
                 className: '',
-                html: pinHtml(pin.tone),
-                iconSize: [30, 40],
-                iconAnchor: [15, 40],
-                popupAnchor: [0, -36],
+                html: face
+                  ? facePinHtml(pin.tone, face)
+                  : glyphPinHtml(pin.tone),
+                iconSize: [geo.width, geo.height],
+                iconAnchor: [geo.anchorX, geo.anchorY],
+                popupAnchor: [0, -(geo.height - 4)],
               }),
               title: `${pin.label} \u2014 ${TONES[pin.tone].title}`,
             });
 
             marker.bindPopup(
-              `<strong>${escapeHtml(pin.label)}</strong>${
+              `<div style="display:flex;gap:8px;align-items:center;">${
+                face
+                  ? `<img src="${face}" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid #d3d1c7;flex:none;"/>`
+                  : ''
+              }<div><strong>${escapeHtml(pin.label)}</strong>${
                 pin.detail
                   ? `<br/><span style="color:#6b6a6a">${escapeHtml(pin.detail)}</span>`
                   : ''
-              }`,
+              }</div></div>`,
             );
 
             marker.on('click', () => clickRef.current?.(pin.id));
