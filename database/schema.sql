@@ -85,6 +85,10 @@ CREATE TABLE device_enrollments (
   face_descriptor JSONB,
   -- Working copy of the embedding; encrypted at rest in production
   face_embedding_data TEXT,
+  -- The face as it looked at enrolment, as a small JPEG data URL. This is a
+  -- record for the admin to look at, NOT an input to verification -- so the
+  -- retention sweep can clear it without breaking anyone's check-in.
+  enrollment_image TEXT,
   is_revoked BOOLEAN NOT NULL DEFAULT FALSE,
   -- Enrollment supervision
   enrolled_by UUID, -- HR/supervisor user id
@@ -126,6 +130,10 @@ CREATE TABLE attendance_events (
   -- Biometric verification scores
   liveness_score NUMERIC CHECK (liveness_score >= 0 AND liveness_score <= 1),
   match_score NUMERIC CHECK (match_score >= 0 AND match_score <= 1),
+  -- The face the camera saw at this punch, as a small JPEG data URL. Makes the
+  -- record auditable: a match score alone cannot be argued with. Cleared by the
+  -- retention sweep; the descriptor verification uses is kept.
+  capture_image TEXT,
   
   -- Status workflow
   status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'verified', 'flagged', 'rejected', 'exported')),
@@ -148,6 +156,53 @@ CREATE INDEX idx_attendance_server_timestamp ON attendance_events(server_timesta
 CREATE INDEX idx_attendance_status ON attendance_events(status);
 CREATE INDEX idx_attendance_employee_date ON attendance_events(employee_id, DATE(server_timestamp AT TIME ZONE 'Asia/Manila'));
 CREATE INDEX idx_attendance_gps ON attendance_events USING GIST(gps_point);
+
+-- =============================================================================
+-- ATTENDANCE ATTEMPTS (refused check-ins and check-outs)
+-- =============================================================================
+-- A refusal is not attendance. These used to be written into attendance_events
+-- with status 'flagged', which put a failed attempt in the same list as real
+-- attendance: one worker retrying a bad capture produced four rows that read as
+-- four attendance records. A refusal is something the admin needs to be *told*
+-- about, so it lives here and surfaces through the notification bell. An admin
+-- can still approve one, which writes a real attendance event and links back.
+CREATE TABLE attendance_attempts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL CHECK (event_type IN ('check_in', 'check_out')),
+
+  device_timestamp TIMESTAMPTZ,
+  server_timestamp TIMESTAMPTZ DEFAULT NOW(),
+
+  -- 'outside_geofence' | 'face_mismatch' | 'no_face' | 'not_enrolled' | 'face_error'
+  reason_code TEXT NOT NULL,
+  -- The message the employee was shown, verbatim.
+  reason TEXT NOT NULL,
+  match_score NUMERIC CHECK (match_score IS NULL OR (match_score >= 0 AND match_score <= 1)),
+  distance_meters NUMERIC,
+  latitude NUMERIC,
+  longitude NUMERIC,
+
+  -- The face the camera actually saw. This is what makes the record
+  -- actionable: "verification failed" tells an admin nothing, a picture does.
+  capture_image TEXT,
+  device_id TEXT,
+
+  -- Notification state
+  acknowledged_at TIMESTAMPTZ,
+  acknowledged_by UUID,
+  -- Set when an admin accepted the attempt, turning it into real attendance.
+  approved_event_id UUID,
+  approved_by UUID,
+  approved_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_attempts_employee_time ON attendance_attempts(employee_id, server_timestamp);
+CREATE INDEX idx_attempts_acknowledged ON attendance_attempts(acknowledged_at);
+CREATE INDEX idx_attempts_unapproved ON attendance_attempts(approved_at) WHERE approved_at IS NULL;
 
 -- =============================================================================
 -- SYNC AUDIT LOG (immutable append-only log)

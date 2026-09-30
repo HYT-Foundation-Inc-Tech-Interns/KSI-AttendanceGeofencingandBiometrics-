@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD, APP_FILTER } from '@nestjs/core';
 import { getDatabaseConfig } from './config/database.config';
 import { getThrottlerConfig } from './config/throttler.config';
@@ -19,6 +20,8 @@ import { BiometricModule } from './modules/biometric/biometric.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 
 @Module({
   imports: [
@@ -42,6 +45,13 @@ import { AdminModule } from './modules/admin/admin.module';
       inject: [ConfigService],
     }),
 
+    /*
+     * Registers the @Cron decorators. Without this the retention sweep is
+     * declared but never scheduled -- it fails silently, which is the worst
+     * possible outcome for a data-protection guarantee.
+     */
+    ScheduleModule.forRoot(),
+
     // Feature Modules
     AuthModule,
     HealthModule,
@@ -51,6 +61,8 @@ import { AdminModule } from './modules/admin/admin.module';
     AttendanceModule,
     DashboardModule,
     AdminModule,
+    NotificationsModule,
+    MaintenanceModule,
     // TODO: Phase 5-6
     // SyncModule,
     // PayrollModule,

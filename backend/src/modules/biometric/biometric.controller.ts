@@ -5,6 +5,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -15,9 +16,13 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiParam,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { UserRole } from '../../database/entities';
 import { BiometricService } from './biometric.service';
 import { EnrollFaceDto, EnrollFaceResponseDto } from './dto/enroll-face.dto';
 import { VerifyFaceDto, VerifyFaceResponseDto } from './dto/verify-face.dto';
@@ -70,6 +75,34 @@ export class BiometricController {
     @Body() verifyDto: VerifyFaceDto,
   ): Promise<VerifyFaceResponseDto> {
     return this.biometricService.verifyFace(user.organizationId, verifyDto, user);
+  }
+
+  /*
+   * Declared before 'enrollments/:employeeId' on purpose: Nest matches routes
+   * in declaration order, so the reverse order would make a request for
+   * 'enrollments' fall into the parameterised handler with employeeId
+   * undefined.
+   */
+  @Get('enrollments')
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.HR)
+  @ApiOperation({
+    summary: 'List every face enrollment in the organization',
+    description:
+      'Back-office view of who has a face on file, including the frame each ' +
+      'employee enrolled with. The 128-d descriptor is never included.',
+  })
+  @ApiQuery({ name: 'includeRevoked', required: false, type: Boolean })
+  @ApiResponse({ status: 200, description: 'List of enrollments' })
+  async listEnrollments(
+    @CurrentUser() user: any,
+    @Query('includeRevoked') includeRevoked?: string,
+  ) {
+    return this.biometricService.listOrganizationEnrollments(
+      user.organizationId,
+      user,
+      { includeRevoked: includeRevoked === 'true' },
+    );
   }
 
   @Get('enrollments/:employeeId')

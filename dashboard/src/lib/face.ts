@@ -159,6 +159,47 @@ const DESCRIPTOR_SAMPLES = 3;
 const SAMPLE_INTERVAL_MS = 200;
 const MIN_DESCRIPTOR_SAMPLES = 2;
 
+/*
+ * The face frame that gets filed alongside the punch.
+ *
+ * This is a record for a human to look at, not an input to verification --
+ * the descriptor above is what decides anything. It exists because "distance
+ * 0.539 exceeded the maximum of 0.450" tells an administrator nothing about
+ * whether the person standing at the gate was actually the employee, and a
+ * picture of who was there does.
+ *
+ * Cropped rather than full-frame: a 640x480 frame of a car park with a small
+ * face in it is both useless and a much larger privacy footprint than the face
+ * itself. The crop is squared around the detection box and padded, so the
+ * result reads as a face rather than as a tight rectangle of skin.
+ */
+const FRAME_PAD_RATIO = 0.35;
+const FRAME_OUTPUT_SIZE = 200;
+const FRAME_QUALITY = 0.72;
+
+/**
+ * Encoded length the client will not exceed.
+ *
+ * The server caps `captureImage` at 400,000 characters and rejects the *whole
+ * check-in* when a field is too long. A thumbnail must never be the reason
+ * someone cannot clock in, so the client aims well under that and treats
+ * anything oversized as "no image" rather than sending it.
+ */
+const FRAME_BUDGET_CHARS = 250_000;
+
+/**
+ * Progressively cheaper encodings, tried in order.
+ *
+ * The first is the normal case at roughly 8-12 KB. The others exist because a
+ * noisy low-light frame compresses badly, and because a very large crop (a
+ * face close to the lens) carries more detail than a small one.
+ */
+const FRAME_ENCODINGS: ReadonlyArray<{ size: number; quality: number }> = [
+  { size: FRAME_OUTPUT_SIZE, quality: FRAME_QUALITY },
+  { size: 160, quality: 0.6 },
+  { size: 128, quality: 0.5 },
+];
+
 export type FaceCaptureFailure =
   | 'model_unavailable'
   | 'no_face'
@@ -171,6 +212,14 @@ export type FaceCaptureResult =
       descriptor: number[];
       detectionScore: number;
       box: { x: number; y: number; width: number; height: number };
+      /**
+       * The face as a small JPEG data URL, for the attendance record.
+       *
+       * null when the crop could not be produced (no 2D context, canvas
+       * blocked) or could not be squeezed into the budget. Never a reason to
+       * fail a capture: the descriptor is the part that matters.
+       */
+      captureImage: string | null;
     }
   | { ok: false; reason: FaceCaptureFailure; message: string };
 
@@ -387,6 +436,91 @@ function validateFaceGeometry(landmarks: Landmarks68, box: Box): string | null {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Crop the detected face out of the current frame as a JPEG data URL.
+ *
+ * Geometry: the detection box is squared around its centre and padded, then
+ * clamped inside the video. The square is *slid* back into range rather than
+ * shrunk, so a face near an edge produces a full-size crop of a face that is
+ * off-centre, not a small crop of a face that is centred. It is also capped at
+ * the frame's shorter side, so a face close enough to overflow the frame still
+ * yields a square rather than a stretched one.
+ *
+ * The frame is not mirrored. The preview is not mirrored either (there is no
+ * `scaleX(-1)` on the video element), so the crop matches what the employee
+ * saw; and for the administrator's actual question -- "is this the person we
+ * enrolled?" -- the true orientation is the useful one.
+ */
+function cropFaceFrame(video: HTMLVideoElement, box: Box): string | null {
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
+  if (!videoWidth || !videoHeight) return null;
+
+  const side = Math.min(
+    Math.max(box.width, box.height) * (1 + FRAME_PAD_RATIO * 2),
+    Math.min(videoWidth, videoHeight)
+  );
+  if (!(side > 0)) return null;
+
+  const left = Math.min(
+    Math.max(box.x + box.width / 2 - side / 2, 0),
+    videoWidth - side
+  );
+  const top = Math.min(
+    Math.max(box.y + box.height / 2 - side / 2, 0),
+    videoHeight - side
+  );
+
+  let canvas: HTMLCanvasElement;
+  let ctx: CanvasRenderingContext2D | null;
+  try {
+    canvas = document.createElement('canvas');
+    ctx = canvas.getContext('2d');
+  } catch {
+    return null;
+  }
+  if (!ctx) return null;
+
+  for (const encoding of FRAME_ENCODINGS) {
+    canvas.width = encoding.size;
+    canvas.height = encoding.size;
+
+    /*
+     * Painted opaque first. A JPEG has no alpha channel, so a transparent
+     * canvas would come out with black patches wherever the source had none --
+     * which reads as a broken image rather than as a photograph.
+     */
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, encoding.size, encoding.size);
+    ctx.drawImage(
+      video,
+      left,
+      top,
+      side,
+      side,
+      0,
+      0,
+      encoding.size,
+      encoding.size
+    );
+
+    let encoded: string;
+    try {
+      encoded = canvas.toDataURL('image/jpeg', encoding.quality);
+    } catch {
+      return null;
+    }
+
+    if (encoded.startsWith('data:image/jpeg') && encoded.length <= FRAME_BUDGET_CHARS) {
+      return encoded;
+    }
+  }
+
+  // Every encoding was still too big. Filing no picture beats failing a
+  // check-in over a thumbnail.
+  return null;
+}
+
 type FrameOk = {
   ok: true;
   score: number;
@@ -563,6 +697,7 @@ export async function captureFaceDescriptor(
   const samples: number[][] = [];
   let bestScore = 0;
   let bestBox: Box | null = null;
+  let bestCrop: string | null = null;
   let firstFailure: FrameBad | null = null;
 
   for (let i = 0; i < DESCRIPTOR_SAMPLES; i += 1) {
@@ -585,9 +720,17 @@ export async function captureFaceDescriptor(
     }
 
     if (frame.descriptor) samples.push(frame.descriptor);
+
+    /*
+     * The crop is taken here, in the same instant as the box it describes,
+     * rather than after the loop. Cropping from a later frame would pair the
+     * picture with a rectangle from an earlier one -- a face that has moved in
+     * between would be cut off by its own bounding box.
+     */
     if (frame.score >= bestScore) {
       bestScore = frame.score;
       bestBox = frame.box;
+      bestCrop = cropFaceFrame(video, frame.box);
     }
   }
 
@@ -616,5 +759,6 @@ export async function captureFaceDescriptor(
     descriptor: averaged,
     detectionScore: bestScore,
     box: bestBox,
+    captureImage: bestCrop,
   };
 }

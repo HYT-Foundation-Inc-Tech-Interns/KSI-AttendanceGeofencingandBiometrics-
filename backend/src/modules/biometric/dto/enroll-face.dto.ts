@@ -11,6 +11,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { FACE_DESCRIPTOR_LENGTH } from '../services/descriptor-match.service';
+import { MAX_CAPTURE_IMAGE_LENGTH } from '../../attendance/dto/check-in.dto';
 
 export class EnrollFaceDto {
   @ApiProperty({
@@ -62,6 +63,19 @@ export class EnrollFaceDto {
   @IsString()
   @MaxLength(255)
   deviceName?: string;
+
+  @ApiProperty({
+    description:
+      'The face the camera saw at enrolment, as a small base64 data URL. ' +
+      'Kept as a record for the admin to compare against later punches; it is ' +
+      'never used for verification. Optional.',
+    example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_CAPTURE_IMAGE_LENGTH)
+  captureImage?: string;
 }
 
 export class EnrollFaceResponseDto {

@@ -7,6 +7,7 @@ import {
   Employee,
   DeviceEnrollment,
   AttendanceEvent,
+  AttendanceAttempt,
   SyncAuditLog,
 } from '../database/entities';
 
@@ -23,6 +24,7 @@ export const getDatabaseConfig = (
       Employee,
       DeviceEnrollment,
       AttendanceEvent,
+      AttendanceAttempt,
       SyncAuditLog,
     ],
     migrations: [__dirname + '/../database/migrations/**/*{.ts,.js}'],

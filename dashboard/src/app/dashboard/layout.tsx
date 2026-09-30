@@ -12,9 +12,9 @@ import {
   LogOut,
   Menu,
   X,
-  Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import NotificationBell from '@/components/notification-bell';
 import { clearSession, homeForRole, isBackOfficeRole, readSession } from '@/lib/auth';
 
 const navigation = [
@@ -206,12 +206,11 @@ export default function DashboardLayout({
             </div>
 
             <div className="flex items-center gap-1">
-              <button
-                className="p-2 rounded-lg text-silver-700 hover:bg-silver-100 hover:text-brand-800 transition-colors"
-                aria-label="Notifications"
-              >
-                <Bell className="w-5 h-5" />
-              </button>
+              {/*
+                Refused check-ins arrive here rather than in the attendance
+                table, which is where they used to land as FLAGGED rows.
+              */}
+              <NotificationBell />
             </div>
           </div>
         </div>

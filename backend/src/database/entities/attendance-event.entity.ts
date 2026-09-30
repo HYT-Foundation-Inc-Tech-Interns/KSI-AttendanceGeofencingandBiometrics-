@@ -81,6 +81,18 @@ export class AttendanceEvent {
   @Column({ name: 'match_score', type: 'numeric', nullable: true })
   matchScore: number | null;
 
+  /**
+   * The face the camera saw at this punch, as a small JPEG data URL.
+   *
+   * Stored so an admin can confirm that the person who checked in is the
+   * person on the roster -- a match score alone cannot be argued with or
+   * audited. Cleared by the retention sweep after BIOMETRIC_RETENTION_DAYS;
+   * the descriptor that verification actually used is kept indefinitely, so
+   * check-in keeps working once the photo is gone.
+   */
+  @Column({ name: 'capture_image', type: 'text', nullable: true })
+  captureImage: string | null;
+
   @Column({
     type: 'enum',
     enum: AttendanceStatus,

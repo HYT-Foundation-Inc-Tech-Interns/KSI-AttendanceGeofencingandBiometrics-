@@ -42,6 +42,18 @@ export class DeviceEnrollment {
   @Column({ name: 'face_embedding_data', type: 'text', nullable: true })
   faceEmbeddingData: string | null; // Legacy image path only; null when a descriptor is stored
 
+  /**
+   * The face as it looked when this enrolment was made, as a small JPEG data
+   * URL.
+   *
+   * Deliberately separate from `faceEmbeddingData`: that column is the *input*
+   * to the legacy image-matching path, whereas this is a record for the admin
+   * to look at. Verification never reads it, so clearing it after
+   * BIOMETRIC_RETENTION_DAYS cannot break anyone's check-in.
+   */
+  @Column({ name: 'enrollment_image', type: 'text', nullable: true })
+  enrollmentImage: string | null;
+
   @Column({ name: 'is_revoked', type: 'boolean', default: false })
   isRevoked: boolean;
 

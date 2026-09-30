@@ -15,8 +15,17 @@ import {
 } from '@/components/ui/table';
 import { Select } from '@/components/ui/select';
 import { StatCard } from '@/components/ui/stat-card';
-import { Users, UserCheck, UserMinus, UserX, Copy, Check, AlertTriangle, Mail } from 'lucide-react';
+import { Users, UserCheck, UserMinus, UserX, Copy, Check, AlertTriangle, Mail, Download, ScanFace } from 'lucide-react';
 import { api } from '@/lib/api';
+import FaceThumb from '@/components/face-thumb';
+import {
+  createZip,
+  dataUrlExtension,
+  dataUrlToBytes,
+  downloadBlob,
+  type ZipEntry,
+} from '@/lib/zip';
+import { format } from 'date-fns';
 
 interface Employee {
   id: string;
@@ -42,6 +51,19 @@ interface Site {
   id: string;
   name: string;
   address: string;
+}
+
+/**
+ * The face an employee enrolled with, keyed by employee id.
+ *
+ * This is the frame the recognition model is built from, kept so an
+ * administrator can answer "is the right person enrolled?" -- a question a
+ * 128-d vector cannot answer, which is why the image is stored beside it.
+ */
+interface EnrolledFace {
+  enrollmentImage: string | null;
+  enrolledAt: string;
+  hasDescriptor: boolean;
 }
 
 /**
@@ -73,6 +95,8 @@ export default function EmployeesPage() {
   const [issuedAccount, setIssuedAccount] = useState<IssuedAccount | null>(null);
   const [notice, setNotice] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [enrolledFaces, setEnrolledFaces] = useState<Record<string, EnrolledFace>>({});
+  const [isExportingFaces, setIsExportingFaces] = useState(false);
   const [formData, setFormData] = useState({
     employeeCode: '',
     fullName: '',
@@ -108,6 +132,31 @@ export default function EmployeesPage() {
 
       setEmployees(employeesList);
       setSites(sitesList);
+
+      /*
+       * Face enrollments load separately and their failure is contained: the
+       * employee list is the point of this page, and a backend that cannot
+       * answer the enrolment query should cost the admin a column, not the
+       * whole table.
+       */
+      try {
+        const enrollmentsList = await api.listFaceEnrollments(token);
+        const byEmployee: Record<string, EnrolledFace> = {};
+        for (const enrollment of enrollmentsList) {
+          // Newest first from the API, so the first one wins and a re-enrolled
+          // employee shows the face they actually use.
+          if (!byEmployee[enrollment.employeeId]) {
+            byEmployee[enrollment.employeeId] = {
+              enrollmentImage: enrollment.enrollmentImage,
+              enrolledAt: enrollment.enrolledAt,
+              hasDescriptor: enrollment.hasDescriptor,
+            };
+          }
+        }
+        setEnrolledFaces(byEmployee);
+      } catch (enrollmentError) {
+        console.error('Failed to load face enrollments:', enrollmentError);
+      }
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -291,6 +340,89 @@ export default function EmployeesPage() {
     return matchesSearch && matchesStatus && matchesSite;
   });
 
+  /**
+   * Download every enrolled face as a ZIP.
+   *
+   * This is the biometric reference set: the images the recognition model was
+   * built from, which is what an administrator needs if the enrolment of a
+   * particular employee is ever in question.
+   */
+  const handleExportFaces = async () => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+
+    setIsExportingFaces(true);
+    try {
+      const enrollments = await api.listFaceEnrollments(token);
+      const withImages = enrollments.filter((row) =>
+        dataUrlToBytes(row.enrollmentImage)
+      );
+
+      if (withImages.length === 0) {
+        alert(
+          enrollments.length === 0
+            ? 'No face enrollments on file.'
+            : 'No enrolled face has an image on file. They may have been cleared by the retention window.'
+        );
+        return;
+      }
+
+      const entries: ZipEntry[] = [];
+      const indexRows: string[][] = [];
+      const usedNames = new Set<string>();
+
+      for (const enrollment of withImages) {
+        const bytes = dataUrlToBytes(enrollment.enrollmentImage);
+        if (!bytes) continue;
+
+        const extension = dataUrlExtension(enrollment.enrollmentImage as string);
+        const code = enrollment.employeeCode || enrollment.employeeId;
+        const stamp = format(new Date(enrollment.enrolledAt), 'yyyy-MM-dd');
+
+        let filename = `${code}_enrolled_${stamp}.${extension}`;
+        let suffix = 1;
+        while (usedNames.has(filename)) {
+          filename = `${code}_enrolled_${stamp}_${suffix}.${extension}`;
+          suffix += 1;
+        }
+        usedNames.add(filename);
+
+        entries.push({ name: `enrollments/${filename}`, data: bytes });
+        indexRows.push([
+          enrollment.employeeName ?? '',
+          enrollment.employeeCode ?? '',
+          enrollment.enrolledAt,
+          enrollment.hasDescriptor ? 'Yes' : 'No',
+          filename,
+        ]);
+      }
+
+      const escape = (value: unknown) => {
+        const text = value === null || value === undefined ? '' : String(value);
+        return `"${text.replace(/"/g, '""')}"`;
+      };
+
+      const indexCsv = [
+        ['Employee', 'Employee Code', 'Enrolled At', 'Descriptor On File', 'Face File']
+          .map(escape)
+          .join(','),
+        ...indexRows.map((row) => row.map(escape).join(',')),
+      ].join('\r\n');
+
+      entries.unshift({
+        name: 'enrollments.csv',
+        data: new TextEncoder().encode(indexCsv),
+      });
+
+      const today = format(new Date(), 'yyyy-MM-dd');
+      downloadBlob(createZip(entries), `enrolled-faces-${today}.zip`);
+    } catch (err: any) {
+      alert(err?.message || 'Failed to export enrolled faces');
+    } finally {
+      setIsExportingFaces(false);
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active':
@@ -408,8 +540,22 @@ export default function EmployeesPage() {
 
       {/* Employees Table */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle>Employee List ({filteredEmployees.length})</CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isExportingFaces}
+            onClick={handleExportFaces}
+            title="Download every enrolled face as a ZIP"
+          >
+            {isExportingFaces ? (
+              <Download className="w-4 h-4 mr-2 animate-pulse" />
+            ) : (
+              <ScanFace className="w-4 h-4 mr-2" />
+            )}
+            {isExportingFaces ? 'Exporting...' : 'Export Faces'}
+          </Button>
         </CardHeader>
         <CardContent>
           <Table>
@@ -417,6 +563,7 @@ export default function EmployeesPage() {
               <TableRow>
                 <TableHead>Employee Code</TableHead>
                 <TableHead>Name</TableHead>
+                <TableHead>Face</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Site</TableHead>
                 <TableHead>Status</TableHead>
@@ -429,6 +576,29 @@ export default function EmployeesPage() {
                 <TableRow key={employee.id}>
                   <TableCell className="font-medium">{employee.employeeCode}</TableCell>
                   <TableCell>{employee.fullName}</TableCell>
+                  {/*
+                    The face on file, so an administrator can see at a glance
+                    who has enrolled and check that the right person did.
+                  */}
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <FaceThumb
+                        src={enrolledFaces[employee.id]?.enrollmentImage ?? null}
+                        name={employee.fullName}
+                      />
+                      {enrolledFaces[employee.id] ? (
+                        <span className="text-xs text-silver-800 whitespace-nowrap">
+                          {new Date(
+                            enrolledFaces[employee.id].enrolledAt
+                          ).toLocaleDateString()}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-silver-800 whitespace-nowrap">
+                          Not enrolled
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell>{employee.email}</TableCell>
                   <TableCell>
                     <div className="text-sm">
@@ -476,7 +646,7 @@ export default function EmployeesPage() {
               ))}
               {filteredEmployees.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-silver-800">
+                  <TableCell colSpan={8} className="text-center py-8 text-silver-800">
                     No employees found
                   </TableCell>
                 </TableRow>

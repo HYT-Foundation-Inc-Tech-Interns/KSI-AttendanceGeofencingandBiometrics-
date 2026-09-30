@@ -8,5 +8,6 @@ export {
   EventType,
   AttendanceStatus,
 } from './attendance-event.entity';
+export { AttendanceAttempt, AttemptReason } from './attendance-attempt.entity';
 export { SyncAuditLog, AuditAction } from './sync-audit-log.entity';
 export { User, UserRole } from './user.entity';

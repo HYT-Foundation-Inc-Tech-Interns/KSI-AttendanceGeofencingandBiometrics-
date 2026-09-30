@@ -12,15 +12,88 @@
  * NEXT_PUBLIC_API_URL is inlined at build time, so it is the single knob for
  * deployed builds. The hostname fallback is kept so local dev and LAN access
  * (e.g. http://192.168.1.104:3002 -> :3000) still work with no configuration.
+ *
+ * ---------------------------------------------------------------------------
+ * Why a loopback URL is treated as "not configured" off loopback
+ *
+ * The build is done on a developer machine, where `http://localhost:3000/v1` is
+ * correct. The same bundle is then opened on a phone over the LAN, where
+ * `localhost` means *the phone* -- nothing is listening there, so every request
+ * fails with a connection error that looks like the backend being down.
+ *
+ * That case is decidable rather than a guess: if the page is not being served
+ * from a loopback host, then a loopback API URL cannot be reachable by
+ * definition. Falling back to the serving host's own `:3000` is what makes the
+ * same build work on a desk and on a handset. A non-loopback configured URL is
+ * always honoured, so a real deployment is unaffected.
  */
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== 'undefined'
-    ? `http://${window.location.hostname}:3000/v1`
-    : 'http://localhost:3000/v1');
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function isLoopbackUrl(url: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function resolveApiBaseUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_API_URL;
+
+  if (typeof window === 'undefined') {
+    return configured || 'http://localhost:3000/v1';
+  }
+
+  const pageIsLoopback = LOOPBACK_HOSTS.has(window.location.hostname);
+  const configuredIsUnreachable = !!configured && isLoopbackUrl(configured) && !pageIsLoopback;
+
+  if (configured && !configuredIsUnreachable) {
+    return configured;
+  }
+
+  return `http://${window.location.hostname}:3000/v1`;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 interface ApiOptions extends RequestInit {
   token?: string;
+}
+
+/**
+ * A refused check-in or check-out, as the notification bell sees it.
+ *
+ * This is deliberately not an attendance event. A refusal means the server
+ * would not accept the punch -- outside the geofence, or a face that did not
+ * match -- so filing it in the attendance table made one worker's four retries
+ * read as four attendance records. The attempt is kept, with the reason and the
+ * face that was standing there, and an administrator either dismisses it or
+ * approves it into real attendance.
+ */
+export interface AttendanceNotification {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  employeeCode: string;
+  siteId: string | null;
+  siteName: string | null;
+  eventType: 'check_in' | 'check_out';
+  serverTimestamp: string;
+  reasonCode:
+    | 'outside_geofence'
+    | 'face_mismatch'
+    | 'no_face'
+    | 'not_enrolled'
+    | 'face_error';
+  /** The sentence shown to the worker, and stored for the administrator. */
+  reason: string;
+  /** 1 - distance, or null when the refusal was not a face comparison. */
+  matchScore: number | null;
+  distanceMeters: number | null;
+  captureImage: string | null;
+  acknowledgedAt: string | null;
+  approvedEventId: string | null;
+  approvedAt: string | null;
 }
 
 /**
@@ -360,6 +433,10 @@ export class ApiClient {
    * always sends one of them -- it does not rely on
    * DEV_SKIP_BIOMETRIC_VERIFICATION, because that flag is read inside the
    * service, after the DTO has already been validated.
+   *
+   * `captureImage` is optional and is not used to decide anything: it is the
+   * cropped face frame the administrator sees next to the punch. Leaving it out
+   * costs a thumbnail, never the check-in.
    */
   async checkIn(
     token: string,
@@ -370,6 +447,7 @@ export class ApiClient {
       longitude: number;
       faceImage?: string;
       faceDescriptor?: number[];
+      captureImage?: string;
       deviceIdentifier?: string;
     }
   ) {
@@ -397,6 +475,7 @@ export class ApiClient {
       longitude: number;
       faceImage?: string;
       faceDescriptor?: number[];
+      captureImage?: string;
       deviceIdentifier?: string;
     }
   ) {
@@ -419,7 +498,8 @@ export class ApiClient {
    * Enroll a face for an employee.
    *
    * Sends the descriptor rather than the photo, so the server stores a vector
-   * it cannot reverse into an image.
+   * it cannot reverse into an image. `captureImage` is the face frame kept for
+   * the administrator to compare against -- a record, not a credential.
    */
   async enrollFace(
     token: string,
@@ -427,6 +507,7 @@ export class ApiClient {
       employeeId: string;
       faceDescriptor?: number[];
       faceImage?: string;
+      captureImage?: string;
       deviceIdentifier?: string;
       deviceName?: string;
     }
@@ -449,19 +530,125 @@ export class ApiClient {
    * The response deliberately carries no `faceDescriptor`: the vector is the
    * credential, and handing it to a browser would let it be replayed as that
    * person's face. `hasDescriptor` is what callers actually need.
+   *
+   * `enrollmentImage` IS present -- the frame the employee enrolled with, as a
+   * data URL. It is a picture of a face, not the credential.
    */
   async getFaceEnrollments(token: string, employeeId: string) {
     return this.request<
       Array<{
         id: string;
+        employeeId: string;
         deviceIdentifier: string | null;
         deviceName: string | null;
         isRevoked: boolean;
         enrolledAt: string;
         faceEmbeddingRef: string;
         hasDescriptor: boolean;
+        enrollmentImage: string | null;
       }>
     >(`/biometric/enrollments/${employeeId}`, { token });
+  }
+
+  /**
+   * Every face enrollment in the organization, for the Employees page.
+   *
+   * Back-office only; the server refuses it for anyone below ADMIN/HR.
+   */
+  async listFaceEnrollments(token: string, includeRevoked = false) {
+    return this.request<
+      Array<{
+        id: string;
+        employeeId: string;
+        employeeName?: string;
+        employeeCode?: string;
+        deviceIdentifier: string | null;
+        deviceName: string | null;
+        isRevoked: boolean;
+        enrolledAt: string;
+        faceEmbeddingRef: string;
+        hasDescriptor: boolean;
+        enrollmentImage: string | null;
+      }>
+    >(
+      `/biometric/enrollments${includeRevoked ? '?includeRevoked=true' : ''}`,
+      { token }
+    );
+  }
+
+  /**
+   * Failed check-ins, for the notification bell.
+   *
+   * These are punches the server refused. They are deliberately not attendance
+   * rows -- a refusal is not a record of someone being at work -- so they live
+   * here until an administrator either dismisses one or approves it into a
+   * real attendance event.
+   */
+  async listNotifications(
+    token: string,
+    options: { includeAcknowledged?: boolean; limit?: number; page?: number } = {}
+  ) {
+    const params = new URLSearchParams();
+    if (options.includeAcknowledged) params.set('includeAcknowledged', 'true');
+    if (options.limit) params.set('limit', String(options.limit));
+    if (options.page) params.set('page', String(options.page));
+    const query = params.toString();
+
+    return this.request<{
+      unreadCount: number;
+      total: number;
+      page: number;
+      limit: number;
+      data: AttendanceNotification[];
+    }>(`/notifications${query ? `?${query}` : ''}`, { token });
+  }
+
+  /** Dismiss one failed attempt without recording attendance. */
+  async acknowledgeNotification(token: string, id: string) {
+    return this.request<AttendanceNotification>(
+      `/notifications/${id}/acknowledge`,
+      { method: 'POST', token }
+    );
+  }
+
+  /** Dismiss every open notification. */
+  async acknowledgeAllNotifications(token: string) {
+    return this.request<{ acknowledged: number }>('/notifications/acknowledge-all', {
+      method: 'POST',
+      token,
+    });
+  }
+
+  /**
+   * Accept a refused punch and turn it into a real attendance event.
+   *
+   * Used when the refusal was the system's fault -- a GPS fix that drifted, a
+   * face that did not read in bad light -- and the person was genuinely there.
+   */
+  async approveNotification(token: string, id: string) {
+    return this.request<AttendanceNotification & { attendanceEventId: string }>(
+      `/notifications/${id}/approve`,
+      { method: 'POST', token }
+    );
+  }
+
+  /**
+   * Report the biometric retention window and how many images are on file.
+   *
+   * ADMIN only: HR looks at the images, but changing when they are destroyed is
+   * a data-protection decision.
+   */
+  async getBiometricRetention(token: string) {
+    return this.request<{
+      enabled: boolean;
+      retentionDays: number | null;
+      cutoff: string | null;
+      imagesOnFile: {
+        enrollments: number;
+        attendanceEvents: number;
+        refusedAttempts: number;
+      };
+    }>('/maintenance/biometric-retention', { token });
   }
 
   // Admin operations

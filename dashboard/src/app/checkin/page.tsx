@@ -693,6 +693,7 @@ export default function CheckInPage() {
   const captureFace = async (): Promise<{
     faceDescriptor?: number[];
     faceImage?: string;
+    captureImage?: string;
   }> => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) {
@@ -703,7 +704,17 @@ export default function CheckInPage() {
 
     if (areFaceModelsReady()) {
       const result: FaceCaptureResult = await captureFaceDescriptor(video);
-      if (result.ok) return { faceDescriptor: result.descriptor };
+      if (result.ok) {
+        /*
+         * `captureImage` is the cropped face frame filed with the record. It is
+         * best-effort and may be null; the descriptor is what decides the
+         * outcome, so a missing thumbnail never blocks a punch.
+         */
+        return {
+          faceDescriptor: result.descriptor,
+          captureImage: result.captureImage ?? undefined,
+        };
+      }
       throw new Error(result.message);
     }
 
@@ -734,6 +745,7 @@ export default function CheckInPage() {
       await api.enrollFace(token, {
         employeeId,
         faceDescriptor: face.faceDescriptor,
+        captureImage: face.captureImage,
         deviceIdentifier: getDeviceId(),
         deviceName: describeDevice(),
       });

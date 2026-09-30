@@ -10,8 +10,20 @@ import {
   ArrayMaxSize,
   Min,
   Max,
+  MaxLength,
 } from 'class-validator';
 import { FACE_DESCRIPTOR_LENGTH } from '../../biometric/services/descriptor-match.service';
+
+/**
+ * Ceiling on a stored face image.
+ *
+ * The phone sends a small face crop (~20 kB of base64), so this is roughly ten
+ * times what a real client needs -- generous enough that a slightly larger
+ * capture is never rejected, bounded enough that the column cannot be filled
+ * with arbitrary data. The body limit in main.ts is 10 MB, so without this a
+ * single request could write megabytes into every row.
+ */
+export const MAX_CAPTURE_IMAGE_LENGTH = 400_000;
 
 export class CheckInDto {
   @ApiProperty({
@@ -79,6 +91,19 @@ export class CheckInDto {
   @IsOptional()
   @IsString()
   deviceIdentifier?: string;
+
+  @ApiProperty({
+    description:
+      'The face the camera saw, as a small base64 data URL, kept so an admin ' +
+      'can confirm who actually punched. Not used for verification -- the ' +
+      'descriptor is. Optional.',
+    example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_CAPTURE_IMAGE_LENGTH)
+  captureImage?: string;
 }
 
 export class CheckOutDto {
@@ -147,6 +172,19 @@ export class CheckOutDto {
   @IsOptional()
   @IsString()
   deviceIdentifier?: string;
+
+  @ApiProperty({
+    description:
+      'The face the camera saw, as a small base64 data URL, kept so an admin ' +
+      'can confirm who actually punched. Not used for verification -- the ' +
+      'descriptor is. Optional.',
+    example: 'data:image/jpeg;base64,/9j/4AAQSkZJRg...',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(MAX_CAPTURE_IMAGE_LENGTH)
+  captureImage?: string;
 }
 
 export class AttendanceEventResponseDto {

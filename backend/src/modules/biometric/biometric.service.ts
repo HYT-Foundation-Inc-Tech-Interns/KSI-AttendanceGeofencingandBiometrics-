@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   UnauthorizedException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -19,22 +20,36 @@ import {
   ActingUser,
   assertMayActForEmployee,
   assertMayReadEmployee,
+  mayActForOthers,
 } from '../../common/utils/employee-scope';
 import { EnrollFaceDto, EnrollFaceResponseDto } from './dto/enroll-face.dto';
 import { VerifyFaceDto, VerifyFaceResponseDto } from './dto/verify-face.dto';
+import {
+  FaceMismatchError,
+  NoEnrollmentError,
+  NoFaceSuppliedError,
+} from './face-verification.error';
 
 /**
  * What a client is told about an enrollment. Note the absence of
  * `faceDescriptor` -- see getEmployeeEnrollments for why.
+ *
+ * `enrollmentImage` IS returned. It is the frame the employee enrolled with,
+ * stored as a data URL. It is a picture of a face, not the credential itself:
+ * see getEmployeeEnrollments for the reasoning.
  */
 export interface EnrollmentSummary {
   id: string;
+  employeeId: string;
+  employeeName?: string;
+  employeeCode?: string;
   deviceIdentifier: string | null;
   deviceName: string | null;
   isRevoked: boolean;
   enrolledAt: Date;
   faceEmbeddingRef: string;
   hasDescriptor: boolean;
+  enrollmentImage: string | null;
 }
 
 /**
@@ -189,8 +204,13 @@ export class BiometricService {
     if (descriptor) {
       enrollment.faceDescriptor = descriptor;
       enrollment.faceEmbeddingRef = EMBEDDING_REF_DESCRIPTOR;
-      // Only the vector is retained; the captured photo is discarded rather
-      // than written to the database.
+      /*
+       * The descriptor is what verification uses, so nothing here is needed for
+       * check-in to work. The capture is kept anyway, as a record: an admin
+       * looking at a disputed punch needs to know whose face was enrolled in
+       * the first place, and "the descriptor matched" is not something a human
+       * can check. The retention sweep clears it; the descriptor stays.
+       */
       enrollment.faceEmbeddingData = null;
     } else {
       // Legacy image path: the reference image is what gets compared later,
@@ -198,6 +218,16 @@ export class BiometricService {
       enrollment.faceDescriptor = null;
       enrollment.faceEmbeddingRef = EMBEDDING_REF_IMAGE;
       enrollment.faceEmbeddingData = enrollDto.faceImage ?? null;
+    }
+
+    /*
+     * Recorded on both paths. On the descriptor path this is the only image
+     * kept at all; on the legacy path it is the same picture `faceImage`
+     * already carries, and storing it twice is cheaper than making the admin
+     * view depend on which path was used.
+     */
+    if (enrollDto.captureImage) {
+      enrollment.enrollmentImage = enrollDto.captureImage;
     }
 
     await this.deviceEnrollmentRepository.save(enrollment);
@@ -283,7 +313,7 @@ export class BiometricService {
      * that hides the mistake.
      */
     if (!verifyDto.faceDescriptor && !verifyDto.faceImage) {
-      throw new BadRequestException(
+      throw new NoFaceSuppliedError(
         'Supply either faceDescriptor (preferred) or faceImage.',
       );
     }
@@ -309,7 +339,7 @@ export class BiometricService {
     });
 
     if (enrollments.length === 0) {
-      throw new BadRequestException(
+      throw new NoEnrollmentError(
         `No face enrollment found for employee ${verifyDto.employeeId}. Please enroll first.`,
       );
     }
@@ -335,7 +365,7 @@ export class BiometricService {
         );
 
       if (enrolledDescriptors.length === 0) {
-        throw new BadRequestException(
+        throw new NoEnrollmentError(
           `Employee ${verifyDto.employeeId} has no usable face enrollment. Please re-enroll.`,
         );
       }
@@ -346,7 +376,7 @@ export class BiometricService {
       );
 
       if (!best) {
-        throw new BadRequestException(
+        throw new NoEnrollmentError(
           `Employee ${verifyDto.employeeId} has no usable face enrollment. Please re-enroll.`,
         );
       }
@@ -355,8 +385,13 @@ export class BiometricService {
         this.logger.warn(
           `Descriptor mismatch for employee ${verifyDto.employeeId}: distance ${best.distance.toFixed(4)} > ${this.descriptorMatchService.maxDistance}`,
         );
-        throw new UnauthorizedException(
+        /*
+         * Carries the confidence so the refusal can be filed with how close it
+         * was. "Failed" alone cannot be reviewed later; "failed at 44%" can.
+         */
+        throw new FaceMismatchError(
           `Face verification failed. Distance ${best.distance.toFixed(3)} exceeded the maximum of ${(1 - best.threshold).toFixed(3)}.`,
+          best.confidence,
         );
       }
 
@@ -507,9 +542,27 @@ export class BiometricService {
      * employee. Returning it to a browser would turn "verify this face" into
      * "paste this number", so clients only ever learn whether an enrollment
      * exists.
+     *
+     * `enrollmentImage` is returned, and the distinction is worth stating
+     * because at a glance both look like "the biometric". A JPEG cannot be
+     * replayed through `POST /biometric/verify` -- that endpoint accepts a
+     * descriptor (in-process, always available) or, on deployments that
+     * configure AWS Rekognition / InsightFace, an image compared by that
+     * service. On this deployment the image path is not configured at all, so
+     * the stored frame has no route back in. And where it would have a route,
+     * the caller would need to be the employee in the picture -- at which
+     * point they are the employee.
+     *
+     * The audience matters too: this is only reachable by the employee
+     * themselves or by ADMIN/HR (see assertMayReadEmployee), i.e. the same
+     * people who see that face on every attendance row. The image is the
+     * enrolment reference an administrator needs in order to answer "is this
+     * the right person enrolled?" -- which is a question they cannot answer
+     * from a hash.
      */
     return enrollments.map((enrollment) => ({
       id: enrollment.id,
+      employeeId: enrollment.employeeId,
       deviceIdentifier: enrollment.deviceIdentifier,
       deviceName: enrollment.deviceName,
       isRevoked: enrollment.isRevoked,
@@ -518,6 +571,62 @@ export class BiometricService {
       hasDescriptor: this.descriptorMatchService.isValidDescriptor(
         enrollment.faceDescriptor,
       ),
+      enrollmentImage: enrollment.enrollmentImage ?? null,
+    }));
+  }
+
+  /**
+   * Every enrollment in the organization, for the admin employee list.
+   *
+   * Separate from getEmployeeEnrollments because the scoping rule is
+   * different: that one answers "may I see this person's face", this one
+   * answers "show me everyone's". Restricting it to ADMIN/HR here (rather
+   * than leaning on assertMayReadEmployee per row) keeps the whole list on
+   * one decision instead of an N-row loop of decisions.
+   */
+  async listOrganizationEnrollments(
+    organizationId: string,
+    actor: ActingUser,
+    options: { includeRevoked?: boolean } = {},
+  ): Promise<EnrollmentSummary[]> {
+    if (!mayActForOthers(actor)) {
+      throw new ForbiddenException(
+        'Only administrators and HR can list face enrollments.',
+      );
+    }
+
+    const qb = this.deviceEnrollmentRepository
+      .createQueryBuilder('enrollment')
+      .innerJoin('enrollment.employee', 'employee')
+      .addSelect([
+        'employee.id',
+        'employee.fullName',
+        'employee.employeeCode',
+      ])
+      .where('employee.organizationId = :organizationId', { organizationId })
+      .orderBy('employee.employeeCode', 'ASC')
+      .addOrderBy('enrollment.enrolledAt', 'DESC');
+
+    if (!options.includeRevoked) {
+      qb.andWhere('enrollment.isRevoked = false');
+    }
+
+    const enrollments = await qb.getMany();
+
+    return enrollments.map((enrollment) => ({
+      id: enrollment.id,
+      employeeId: enrollment.employeeId,
+      employeeName: enrollment.employee?.fullName,
+      employeeCode: enrollment.employee?.employeeCode,
+      deviceIdentifier: enrollment.deviceIdentifier,
+      deviceName: enrollment.deviceName,
+      isRevoked: enrollment.isRevoked,
+      enrolledAt: enrollment.enrolledAt,
+      faceEmbeddingRef: enrollment.faceEmbeddingRef,
+      hasDescriptor: this.descriptorMatchService.isValidDescriptor(
+        enrollment.faceDescriptor,
+      ),
+      enrollmentImage: enrollment.enrollmentImage ?? null,
     }));
   }
 }

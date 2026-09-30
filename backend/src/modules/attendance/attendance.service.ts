@@ -11,12 +11,15 @@ import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import {
   AttendanceEvent,
+  AttendanceAttempt,
+  AttemptReason,
   EventType,
   AttendanceStatus,
   Employee,
   toGeoJsonPoint,
 } from '../../database/entities';
 import { BiometricService } from '../biometric/biometric.service';
+import { matchScoreOf, reasonCodeOf } from '../biometric/face-verification.error';
 import { SitesService } from '../sites/sites.service';
 import {
   ActingUser,
@@ -25,6 +28,17 @@ import {
 import { CheckInDto, CheckOutDto, AttendanceEventResponseDto } from './dto/check-in.dto';
 import { ListAttendanceEventsQueryDto } from './dto/list-attendance-events.dto';
 
+/** What a refusal needs to be filed under. */
+interface RefusalContext {
+  employeeId: string;
+  siteId: string;
+  eventType: EventType;
+  deviceIdentifier?: string;
+  latitude: number;
+  longitude: number;
+  captureImage?: string;
+}
+
 @Injectable()
 export class AttendanceService {
   private readonly logger = new Logger(AttendanceService.name);
@@ -32,12 +46,60 @@ export class AttendanceService {
   constructor(
     @InjectRepository(AttendanceEvent)
     private attendanceRepository: Repository<AttendanceEvent>,
+    @InjectRepository(AttendanceAttempt)
+    private attemptRepository: Repository<AttendanceAttempt>,
     @InjectRepository(Employee)
     private employeeRepository: Repository<Employee>,
     private biometricService: BiometricService,
     private sitesService: SitesService,
     private configService: ConfigService,
   ) {}
+
+  /**
+   * File a refused check-in or check-out.
+   *
+   * This used to write an `attendance_events` row with status FLAGGED, which
+   * put a refusal in the same list as real attendance: one worker retrying a
+   * bad capture produced four rows that read as four attendance records, and
+   * the admin had to read a sentence in the status column to tell them apart.
+   *
+   * A refusal is not attendance. It goes in its own table and reaches the admin
+   * through the notification bell, where it can be approved into attendance if
+   * the refusal turns out to have been the system's fault rather than the
+   * worker's.
+   *
+   * Filing must never mask the refusal itself, so a failure to write the record
+   * is logged and swallowed -- the caller still throws the denial.
+   */
+  private async recordRefusal(
+    context: RefusalContext,
+    reasonCode: AttemptReason,
+    reason: string,
+    extras: { matchScore?: number | null; distanceMeters?: number | null } = {},
+  ): Promise<void> {
+    try {
+      await this.attemptRepository.save(
+        this.attemptRepository.create({
+          employeeId: context.employeeId,
+          siteId: context.siteId,
+          eventType: context.eventType,
+          deviceTimestamp: new Date(),
+          reasonCode,
+          reason,
+          matchScore: extras.matchScore ?? null,
+          distanceMeters: extras.distanceMeters ?? null,
+          latitude: context.latitude,
+          longitude: context.longitude,
+          captureImage: context.captureImage ?? null,
+          deviceId: context.deviceIdentifier ?? null,
+        }),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Could not record refused ${context.eventType} for employee ${context.employeeId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   /**
    * Check-in: Validate geofence + biometric, create attendance event
@@ -109,20 +171,20 @@ export class AttendanceService {
       distanceFromSite = geofenceResult.distance;
 
       if (!withinGeofence) {
-        // Create flagged event
-        const event = this.attendanceRepository.create({
-          clientEventId: uuidv4(),
-          employeeId: checkInDto.employeeId,
-          siteId: checkInDto.siteId,
-          eventType: EventType.CHECK_IN,
-          deviceTimestamp: new Date(),
-          gpsPoint: toGeoJsonPoint(checkInDto.longitude, checkInDto.latitude),
-          status: AttendanceStatus.FLAGGED,
-          flagReason: `Outside geofence (${distanceFromSite}m from site)`,
-          deviceId: checkInDto.deviceIdentifier,
-        });
-
-        await this.attendanceRepository.save(event);
+        await this.recordRefusal(
+          {
+            employeeId: checkInDto.employeeId,
+            siteId: checkInDto.siteId,
+            eventType: EventType.CHECK_IN,
+            deviceIdentifier: checkInDto.deviceIdentifier,
+            latitude: checkInDto.latitude,
+            longitude: checkInDto.longitude,
+            captureImage: checkInDto.captureImage,
+          },
+          AttemptReason.OUTSIDE_GEOFENCE,
+          `Outside geofence (${distanceFromSite}m from site)`,
+          { distanceMeters: distanceFromSite ?? null },
+        );
 
         throw new UnauthorizedException(
           `Check-in denied: You are ${distanceFromSite}m from the site. Please move closer.`,
@@ -153,22 +215,24 @@ export class AttendanceService {
         // rather than from the fact that the request once returned 200.
         matchScore = verifyResult.confidence ?? null;
       } catch (error) {
-        // Create flagged event
-        const event = this.attendanceRepository.create({
-          clientEventId: uuidv4(),
-          employeeId: checkInDto.employeeId,
-          siteId: checkInDto.siteId,
-          eventType: EventType.CHECK_IN,
-          deviceTimestamp: new Date(),
-          gpsPoint: toGeoJsonPoint(checkInDto.longitude, checkInDto.latitude),
-          status: AttendanceStatus.FLAGGED,
-          flagReason: `Biometric verification failed: ${error.message}`,
-          deviceId: checkInDto.deviceIdentifier,
-        });
+        await this.recordRefusal(
+          {
+            employeeId: checkInDto.employeeId,
+            siteId: checkInDto.siteId,
+            eventType: EventType.CHECK_IN,
+            deviceIdentifier: checkInDto.deviceIdentifier,
+            latitude: checkInDto.latitude,
+            longitude: checkInDto.longitude,
+            captureImage: checkInDto.captureImage,
+          },
+          reasonCodeOf(error),
+          error instanceof Error ? error.message : String(error),
+          { matchScore: matchScoreOf(error) },
+        );
 
-        await this.attendanceRepository.save(event);
-
-        throw new UnauthorizedException(`Check-in denied: ${error.message}`);
+        throw new UnauthorizedException(
+          `Check-in denied: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 
@@ -183,6 +247,7 @@ export class AttendanceService {
       status: AttendanceStatus.VERIFIED,
       deviceId: checkInDto.deviceIdentifier,
       matchScore,
+      captureImage: checkInDto.captureImage ?? null,
     });
 
     await this.attendanceRepository.save(event);
@@ -267,20 +332,20 @@ export class AttendanceService {
       distanceFromSite = geofenceResult.distance;
 
       if (!withinGeofence) {
-        // Create flagged event
-        const event = this.attendanceRepository.create({
-          clientEventId: uuidv4(),
-          employeeId: checkOutDto.employeeId,
-          siteId: checkOutDto.siteId,
-          eventType: EventType.CHECK_OUT,
-          deviceTimestamp: new Date(),
-          gpsPoint: toGeoJsonPoint(checkOutDto.longitude, checkOutDto.latitude),
-          status: AttendanceStatus.FLAGGED,
-          flagReason: `Outside geofence (${distanceFromSite}m from site)`,
-          deviceId: checkOutDto.deviceIdentifier,
-        });
-
-        await this.attendanceRepository.save(event);
+        await this.recordRefusal(
+          {
+            employeeId: checkOutDto.employeeId,
+            siteId: checkOutDto.siteId,
+            eventType: EventType.CHECK_OUT,
+            deviceIdentifier: checkOutDto.deviceIdentifier,
+            latitude: checkOutDto.latitude,
+            longitude: checkOutDto.longitude,
+            captureImage: checkOutDto.captureImage,
+          },
+          AttemptReason.OUTSIDE_GEOFENCE,
+          `Outside geofence (${distanceFromSite}m from site)`,
+          { distanceMeters: distanceFromSite ?? null },
+        );
 
         throw new UnauthorizedException(
           `Check-out denied: You are ${distanceFromSite}m from the site. Please move closer.`,
@@ -309,22 +374,24 @@ export class AttendanceService {
         biometricVerified = verifyResult.verified;
         matchScore = verifyResult.confidence ?? null;
       } catch (error) {
-        // Create flagged event
-        const event = this.attendanceRepository.create({
-          clientEventId: uuidv4(),
-          employeeId: checkOutDto.employeeId,
-          siteId: checkOutDto.siteId,
-          eventType: EventType.CHECK_OUT,
-          deviceTimestamp: new Date(),
-          gpsPoint: toGeoJsonPoint(checkOutDto.longitude, checkOutDto.latitude),
-          status: AttendanceStatus.FLAGGED,
-          flagReason: `Biometric verification failed: ${error.message}`,
-          deviceId: checkOutDto.deviceIdentifier,
-        });
+        await this.recordRefusal(
+          {
+            employeeId: checkOutDto.employeeId,
+            siteId: checkOutDto.siteId,
+            eventType: EventType.CHECK_OUT,
+            deviceIdentifier: checkOutDto.deviceIdentifier,
+            latitude: checkOutDto.latitude,
+            longitude: checkOutDto.longitude,
+            captureImage: checkOutDto.captureImage,
+          },
+          reasonCodeOf(error),
+          error instanceof Error ? error.message : String(error),
+          { matchScore: matchScoreOf(error) },
+        );
 
-        await this.attendanceRepository.save(event);
-
-        throw new UnauthorizedException(`Check-out denied: ${error.message}`);
+        throw new UnauthorizedException(
+          `Check-out denied: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 
@@ -339,6 +406,7 @@ export class AttendanceService {
       status: AttendanceStatus.VERIFIED,
       deviceId: checkOutDto.deviceIdentifier,
       matchScore,
+      captureImage: checkOutDto.captureImage ?? null,
     });
 
     await this.attendanceRepository.save(event);
@@ -454,6 +522,13 @@ export class AttendanceService {
    * Flatten an event into the shape the dashboard consumes. `gpsPoint` arrives
    * as a GeoJSON object because PostGIS geography columns are read through
    * `ST_AsGeoJSON`, so lat/lng are read from coordinates (which are [lng, lat]).
+   *
+   * `captureImage` is returned inline rather than behind a URL. The dashboard
+   * authenticates with a Bearer token in localStorage, which an `<img src>`
+   * cannot send, so a separate image endpoint would need either a token in the
+   * query string or a blob fetch per row. Inline is one request instead of
+   * fifty. It is affordable because the phone sends a small face crop (~10-20
+   * kB), not a full camera frame.
    */
   private toListItem(event: AttendanceEvent) {
     const [longitude, latitude] = event.gpsPoint?.coordinates ?? [null, null];
@@ -483,6 +558,7 @@ export class AttendanceService {
         event.matchScore === null || event.matchScore === undefined
           ? null
           : Number(event.matchScore),
+      captureImage: event.captureImage ?? null,
       flagReason: event.flagReason ?? null,
       isMockLocation: event.isMockLocation,
       createdOffline: event.createdOffline,

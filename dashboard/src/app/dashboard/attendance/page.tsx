@@ -27,6 +27,7 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight,
+  ScanFace,
 } from 'lucide-react';
 import {
   format,
@@ -39,6 +40,14 @@ import {
   endOfMonth,
 } from 'date-fns';
 import { api } from '@/lib/api';
+import FaceThumb from '@/components/face-thumb';
+import {
+  createZip,
+  dataUrlExtension,
+  dataUrlToBytes,
+  downloadBlob,
+  type ZipEntry,
+} from '@/lib/zip';
 
 /**
  * Mirrors the statuses the backend actually stores (AttendanceStatus enum).
@@ -67,6 +76,14 @@ interface AttendanceEvent {
   flagReason: string | null;
   isMockLocation: boolean;
   createdOffline: boolean;
+  /**
+   * The face captured at this punch, as a small JPEG data URL, or null when no
+   * image was taken or the retention sweep has cleared it.
+   *
+   * Inline rather than a URL because the dashboard authenticates with a Bearer
+   * token, which an `<img src>` cannot send.
+   */
+  captureImage: string | null;
 }
 
 interface Counts {
@@ -125,6 +142,7 @@ export default function AttendancePage() {
   const [counts, setCounts] = useState<Counts>(EMPTY_COUNTS);
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingFaces, setIsExportingFaces] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
 
@@ -346,6 +364,94 @@ export default function AttendancePage() {
     }
   };
 
+  /**
+   * Download the captured faces as a ZIP, one image per attendance row.
+   *
+   * A ZIP rather than extra columns on the CSV: a face is roughly 8-12 KB of
+   * base64, so two hundred rows would put a 2 MB blob in a single cell and most
+   * spreadsheet programs would refuse to open it. The archive carries an index
+   * CSV as well, so the images can be matched back to rows without guessing
+   * from filenames.
+   */
+  const handleExportFaces = async () => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+
+    setIsExportingFaces(true);
+    try {
+      const result = await api.getAttendanceEvents(token, buildFilters(true));
+      const rows: AttendanceEvent[] = result.data ?? [];
+      const withFaces = rows.filter((event) => dataUrlToBytes(event.captureImage));
+
+      if (withFaces.length === 0) {
+        alert(
+          rows.length === 0
+            ? 'No events match the current filters.'
+            : 'None of the matching events has a face image on file. They may have been cleared by the retention window.'
+        );
+        return;
+      }
+
+      const entries: ZipEntry[] = [];
+      const indexRows: string[][] = [];
+      /** Guards against two punches in the same second overwriting each other. */
+      const usedNames = new Set<string>();
+
+      for (const event of withFaces) {
+        const bytes = dataUrlToBytes(event.captureImage);
+        if (!bytes) continue;
+
+        const extension = dataUrlExtension(event.captureImage as string);
+        const stamp = format(new Date(event.serverTimestamp), 'yyyy-MM-dd_HHmmss');
+        const kind = event.eventType === 'check_in' ? 'check-in' : 'check-out';
+
+        let filename = `${event.employeeCode}_${stamp}_${kind}.${extension}`;
+        let suffix = 1;
+        while (usedNames.has(filename)) {
+          filename = `${event.employeeCode}_${stamp}_${kind}_${suffix}.${extension}`;
+          suffix += 1;
+        }
+        usedNames.add(filename);
+
+        entries.push({ name: `faces/${filename}`, data: bytes });
+        indexRows.push([
+          event.employeeName,
+          event.employeeCode,
+          event.siteName,
+          event.eventType,
+          event.serverTimestamp,
+          event.status,
+          filename,
+        ]);
+      }
+
+      const escape = (value: unknown) => {
+        const text = value === null || value === undefined ? '' : String(value);
+        return `"${text.replace(/"/g, '""')}"`;
+      };
+
+      const indexCsv = [
+        ['Employee', 'Employee Code', 'Site', 'Type', 'Server Time', 'Status', 'Face File']
+          .map(escape)
+          .join(','),
+        ...indexRows.map((row) => row.map(escape).join(',')),
+      ].join('\r\n');
+
+      // Listed first so the index is the obvious entry point when opened.
+      entries.unshift({
+        name: 'faces.csv',
+        data: new TextEncoder().encode(indexCsv),
+      });
+
+      const today = format(new Date(), 'yyyy-MM-dd');
+      downloadBlob(createZip(entries), `attendance-faces-${today}.zip`);
+    } catch (err: any) {
+      alert(err?.message || 'Failed to export faces');
+    } finally {
+      setIsExportingFaces(false);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'verified':
@@ -537,6 +643,15 @@ export default function AttendancePage() {
               <Download className="w-4 h-4 mr-2" />
               {isExporting ? 'Exporting...' : 'Export CSV'}
             </Button>
+            <Button
+              onClick={handleExportFaces}
+              variant="outline"
+              size="sm"
+              disabled={isExportingFaces}
+            >
+              <ScanFace className="w-4 h-4 mr-2" />
+              {isExportingFaces ? 'Exporting...' : 'Export Faces'}
+            </Button>
             <div className="ml-auto text-sm text-silver-800">
               {total === 0
                 ? 'No events'
@@ -573,6 +688,7 @@ export default function AttendancePage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Employee</TableHead>
+                  <TableHead>Face</TableHead>
                   <TableHead>Site</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Time</TableHead>
@@ -589,6 +705,20 @@ export default function AttendancePage() {
                         <p className="font-medium text-ink">{event.employeeName}</p>
                         <p className="text-sm text-silver-800">{event.employeeCode}</p>
                       </div>
+                    </TableCell>
+                    {/*
+                      The face as it was at this punch. Clicking opens the full
+                      frame, which is the only way to answer "was that actually
+                      them?" from the table without opening every row.
+                    */}
+                    <TableCell>
+                      <button
+                        onClick={() => setSelectedEvent(event)}
+                        className="rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-2"
+                        aria-label={`View the captured face for ${event.employeeName}`}
+                      >
+                        <FaceThumb src={event.captureImage} name={event.employeeName} />
+                      </button>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -726,6 +856,34 @@ export default function AttendancePage() {
               <CardTitle>Attendance Event Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/*
+                The face captured at this punch, at a size worth looking at.
+                Sits above the field grid because it is the one piece of
+                evidence that answers whether the right person was there -- the
+                scores and coordinates below only say how confident the system
+                was and where it thought it was.
+              */}
+              <div className="flex items-start gap-4">
+                <FaceThumb
+                  src={selectedEvent.captureImage}
+                  name={selectedEvent.employeeName}
+                  size="lg"
+                />
+                <div className="min-w-0">
+                  <p className="text-sm text-silver-800">Face captured at check-in</p>
+                  {selectedEvent.captureImage ? (
+                    <p className="text-sm text-ink mt-1">
+                      Cropped around the detected face at the moment of the punch.
+                    </p>
+                  ) : (
+                    <p className="text-sm text-silver-800 mt-1">
+                      No face image on file. Either none was captured, or it has
+                      passed the retention window and been cleared.
+                    </p>
+                  )}
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-silver-800">Employee</p>
