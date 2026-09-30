@@ -17,15 +17,31 @@
  * Why a loopback URL is treated as "not configured" off loopback
  *
  * The build is done on a developer machine, where `http://localhost:3000/v1` is
- * correct. The same bundle is then opened on a phone over the LAN, where
- * `localhost` means *the phone* -- nothing is listening there, so every request
- * fails with a connection error that looks like the backend being down.
+ * correct. The same bundle is then opened on a phone, where `localhost` means
+ * *the phone* -- nothing is listening there, so every request fails with a
+ * connection error that looks like the backend being down.
  *
  * That case is decidable rather than a guess: if the page is not being served
  * from a loopback host, then a loopback API URL cannot be reachable by
- * definition. Falling back to the serving host's own `:3000` is what makes the
- * same build work on a desk and on a handset. A non-loopback configured URL is
- * always honoured, so a real deployment is unaffected.
+ * definition. A non-loopback configured URL is always honoured, so a real
+ * deployment is unaffected.
+ *
+ * ---------------------------------------------------------------------------
+ * Why an https page calls its own origin
+ *
+ * The phone camera needs a secure context -- on plain http:// `navigator.
+ * mediaDevices` is undefined, not merely denied -- so phone testing means
+ * HTTPS, and in practice that means a tunnel. A Cloudflare quick tunnel maps
+ * one hostname to one local port, so the app and the API have to share a port
+ * (`_serve-out.mjs` proxies /v1 alongside the export).
+ *
+ * That is also the only arrangement that can work: an https page calling an
+ * http:// endpoint is blocked as mixed content before CORS is consulted. So on
+ * https the API is same-origin, and the tunnel hostname -- which changes every
+ * time a quick tunnel restarts -- never has to be baked into a build.
+ *
+ * Plain http off loopback (a phone on the LAN, where the camera is blocked
+ * anyway) keeps the original direct route to the backend's own :3000.
  */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
@@ -44,14 +60,18 @@ function resolveApiBaseUrl(): string {
     return configured || 'http://localhost:3000/v1';
   }
 
-  const pageIsLoopback = LOOPBACK_HOSTS.has(window.location.hostname);
-  const configuredIsUnreachable = !!configured && isLoopbackUrl(configured) && !pageIsLoopback;
-
-  if (configured && !configuredIsUnreachable) {
+  // A configured non-loopback API host is a real deployment; always honour it.
+  if (configured && !isLoopbackUrl(configured)) {
     return configured;
   }
 
-  return `http://${window.location.hostname}:3000/v1`;
+  const { hostname, origin, protocol } = window.location;
+
+  if (LOOPBACK_HOSTS.has(hostname)) {
+    return configured || 'http://localhost:3000/v1';
+  }
+
+  return protocol === 'https:' ? `${origin}/v1` : `http://${hostname}:3000/v1`;
 }
 
 const API_BASE_URL = resolveApiBaseUrl();
