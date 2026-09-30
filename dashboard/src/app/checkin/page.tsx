@@ -44,6 +44,7 @@ import { Select } from '@/components/ui/select';
 import { ApiError, api } from '@/lib/api';
 import {
   FaceCaptureResult,
+  FaceReading,
   areFaceModelsReady,
   captureFaceDescriptor,
   detectFaces,
@@ -191,16 +192,15 @@ export default function CheckInPage() {
    * the user press a button that will fail.
    *
    * `faceStatus` is the live "are you framed" reading, refreshed on a short
-   * interval. It is advisory: the authoritative capture happens on submit.
+   * interval. It runs the same gates the capture does, so it can say why a
+   * frame is unusable while there is still time to move -- rather than only
+   * after the button is pressed. The capture remains authoritative.
    */
   const [faceModelState, setFaceModelState] = useState<
     'idle' | 'loading' | 'ready' | 'error'
   >('idle');
   const [faceModelError, setFaceModelError] = useState('');
-  const [faceStatus, setFaceStatus] = useState<{
-    count: number;
-    score: number;
-  } | null>(null);
+  const [faceStatus, setFaceStatus] = useState<FaceReading | null>(null);
 
   /*
    * The model load must start exactly once, and must survive the effect
@@ -279,7 +279,8 @@ export default function CheckInPage() {
    * Plain-language framing advice for the overlay.
    *
    * Phrased as instructions rather than status codes: "Move closer" is
-   * actionable, "score 0.42" is not.
+   * actionable, "score 0.42" is not. The wording comes from the capture gates
+   * themselves, so the overlay cannot promise a capture that would then fail.
    */
   const framing = useMemo(() => {
     if (faceModelState === 'idle' || faceModelState === 'loading') {
@@ -294,14 +295,8 @@ export default function CheckInPage() {
     if (!faceStatus) {
       return { tone: 'muted' as const, text: 'Looking for your face…' };
     }
-    if (faceStatus.count === 0) {
-      return { tone: 'warn' as const, text: 'No face in view — centre your face in the oval' };
-    }
-    if (faceStatus.count > 1) {
-      return { tone: 'warn' as const, text: 'More than one face — make sure only you are in frame' };
-    }
-    if (faceStatus.score < 0.6) {
-      return { tone: 'warn' as const, text: 'Hold still and move a little closer' };
+    if (faceStatus.problem) {
+      return { tone: 'warn' as const, text: faceStatus.problem };
     }
     return { tone: 'ok' as const, text: 'Face detected' };
   }, [faceModelState, faceStatus]);
@@ -575,12 +570,10 @@ export default function CheckInPage() {
     const poll = async () => {
       const video = videoRef.current;
       if (video && video.videoWidth && !cancelled) {
-        try {
-          const reading = await detectFaces(video);
-          if (!cancelled) setFaceStatus(reading);
-        } catch {
-          // A failed poll is not worth surfacing; the next one will retry.
-        }
+        // `detectFaces` reports its own failures as a `problem` string rather
+        // than throwing, so a bad poll just becomes advice in the overlay.
+        const reading = await detectFaces(video);
+        if (!cancelled) setFaceStatus(reading);
       }
       if (!cancelled) timer = setTimeout(poll, 900);
     };

@@ -34,11 +34,21 @@ export class DescriptorMatchService {
   /**
    * Maximum Euclidean distance that still counts as the same person.
    *
-   * 0.6 is the figure face-api's own documentation gives for its 128-d
-   * descriptor: comfortably below the ~0.6-1.0 distances unrelated faces
-   * produce, without demanding so exact a capture that ordinary lighting
-   * differences fail. Tightening it rejects more impostors at the cost of
-   * more false rejections for the legitimate employee.
+   * face-api documents 0.6 for its 128-d descriptor, but that figure is a
+   * generous 1:N "is this the nearest known person" bound rather than a 1:1
+   * "is this the person they claim to be" one. In live use it accepted a
+   * different person's face at 0.487 and a mis-detected body part at 0.585.
+   *
+   * Measured against real photographs, two clean captures of the same person
+   * sit 0.08-0.11 apart and two different people sit 0.90 apart, so 0.45 keeps
+   * a wide margin either side while excluding the false accepts above. The
+   * distance is only meaningful when the capture was good, which is why the
+   * client refuses small, blurry or implausible detections before sending --
+   * a noisy descriptor is what collapses that 0.10-to-0.90 gap into the middle
+   * of the range and makes any threshold unreliable.
+   *
+   * Still a genuine trade-off: too tight and a real employee is turned away in
+   * poor light. Override with FACE_DESCRIPTOR_MAX_DISTANCE.
    *
    * Public so callers can quote the actual bound in an error message.
    */
@@ -46,7 +56,7 @@ export class DescriptorMatchService {
 
   constructor(private readonly configService: ConfigService) {
     this.maxDistance = parseFloat(
-      this.configService.get<string>('FACE_DESCRIPTOR_MAX_DISTANCE', '0.6'),
+      this.configService.get<string>('FACE_DESCRIPTOR_MAX_DISTANCE', '0.45'),
     );
 
     if (!Number.isFinite(this.maxDistance) || this.maxDistance <= 0) {
