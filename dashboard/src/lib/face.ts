@@ -446,10 +446,20 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * the frame's shorter side, so a face close enough to overflow the frame still
  * yields a square rather than a stretched one.
  *
- * The frame is not mirrored. The preview is not mirrored either (there is no
- * `scaleX(-1)` on the video element), so the crop matches what the employee
- * saw; and for the administrator's actual question -- "is this the person we
- * enrolled?" -- the true orientation is the useful one.
+ * The frame is deliberately NOT mirrored, even though the on-screen preview is
+ * (the video element in the check-in page carries `scaleX(-1)`).
+ *
+ * The two are split on purpose. A worker expects a selfie preview to behave
+ * like a mirror -- field testers reported the raw feed as "inverted", because
+ * raising a hand moves it the wrong way on screen. But `drawImage` reads the
+ * raw video frame, which no CSS transform can reach, so what gets filed is the
+ * true orientation: how another person sees the employee. That is the one the
+ * administrator's actual question -- "is this the person we enrolled?" --
+ * needs, and it is the same frame the descriptor is computed from.
+ *
+ * This cannot weaken verification. Mirroring is a display concern: a flipped
+ * face is still the same face, and enrolment and check-in are both captured
+ * through this one un-mirrored path, so they always agree with each other.
  */
 function cropFaceFrame(video: HTMLVideoElement, box: Box): string | null {
   const videoWidth = video.videoWidth;

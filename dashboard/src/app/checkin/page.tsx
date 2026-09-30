@@ -1320,12 +1320,37 @@ export default function CheckInPage() {
             <Card className="border-silver-200 shadow-sm overflow-hidden">
               <CardContent className="p-0">
                 <div className="relative bg-silver-900 aspect-[4/3]">
+                  {/*
+                    The preview is mirrored; the picture that gets filed is not.
+
+                    Field testers reported the view felt inverted, and they were
+                    describing the raw camera feed: raise your left hand and it
+                    appears on the right of the screen. Every selfie camera they
+                    have ever used shows a mirror, so the honest image is the one
+                    that reads as backwards.
+
+                    So the preview is flipped to behave like a mirror, which is
+                    the only thing a CSS transform can reach. `drawImage` in
+                    `@/lib/face` reads the raw video frame, which no transform
+                    touches, so the stored face -- and the descriptor computed
+                    from it -- stays in the true orientation. That split is the
+                    point: easy to line yourself up, honest in the record.
+
+                    It costs nothing in security. A mirrored face is still the
+                    same face, and enrolment and check-in both come off this same
+                    un-mirrored path, so they always agree with each other.
+
+                    Nothing here is directional -- the guide is a centred oval
+                    and the advice is only ever "Move closer" or "Face detected"
+                    -- so flipping the view cannot invert an instruction.
+                  */}
                   <video
                     ref={videoRef}
                     playsInline
                     muted
                     autoPlay
                     className="w-full h-full object-cover"
+                    style={{ transform: 'scaleX(-1)' }}
                   />
 
                   {/*
