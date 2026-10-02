@@ -112,6 +112,38 @@ services:
       - key: ENCRYPTION_KEY
         sync: false
 
+      # --- mail ------------------------------------------------------------
+      # Employee creation sends the credentials by email, so these must be set
+      # or that feature fails at runtime with "SMTP is not configured
+      # (SMTP_HOST / SMTP_USER / SMTP_PASS)". They are read in
+      # backend/src/modules/mail/mail.service.ts; SMTP_PORT defaults to 587 and
+      # SMTP_SECURE to "false" if omitted, so both are declared explicitly here
+      # to match the working local config.
+      #
+      # SMTP_PASS for a Gmail account is a 16-character App Password, not the
+      # account password. SMTP_FROM is a display string of the form
+      # `Name <address>` and contains spaces and angle brackets -- paste it as
+      # the raw value, Render does not need it quoted.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+
+      # --- links -----------------------------------------------------------
+      # The link inside the credential email. Not derivable at build time: it
+      # depends on the Cloudflare Pages URL, which does not exist until Part 3.
+      # Set it to https://<project>.pages.dev/checkin once that is known.
+      - key: APP_CHECKIN_URL
+        sync: false
+
       # --- rate limiting ---------------------------------------------------
       - key: RATE_LIMIT
         value: "100"
