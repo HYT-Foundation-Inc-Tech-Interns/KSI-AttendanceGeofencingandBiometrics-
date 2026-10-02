@@ -55,50 +55,54 @@ changes. `next.config.ts` is already `output: "export"`.
 
 ## Part 1 — Push the code (required first: Render builds from GitHub)
 
-The remote's history is **unrelated** to the local one — it holds a single
-`First Commit` import — so a normal push is rejected.
+The remote is `KSI-AttendanceGeofencingandBiometrics-`, and it is **empty** —
+verified, not assumed: `git ls-remote origin` returns exit 0 with **zero refs**.
 
-A force-push would drop 6 entries that exist only on the remote:
-
-- `dashboard` — recorded there as a **git submodule pointer** (`160000`), not
-  real files. Locally it is a normal directory, so the force-push *improves*
-  this.
-- `mobile/metro.config.js` and `mobile/assets/{icon,splash,favicon,adaptive-icon}.png`
-  — 5 real files that were never in local history.
-
-`mobile/` is not referenced by `render.yaml` or the Dockerfile, so it does not
-affect the deployment. The commands below restore those 5 files first, which
-makes the push lose **nothing at all**.
+Because there is no existing history, the earlier problem with unrelated
+histories is gone. **No force-push is needed, and no history is rewritten.** A
+plain push is correct.
 
 ```bash
-# 1. keep the remote's only commit locally, so nothing is unrecoverable
-git fetch origin main
-git branch remote-first-commit origin/main
+# one-time: point the local repo at the new remote (already done locally)
+git remote set-url origin \
+  https://github.com/HYT-Foundation-Inc-Tech-Interns/KSI-AttendanceGeofencingandBiometrics-.git
 
-# 2. bring back the 5 mobile files that exist only on the remote
-git checkout remote-first-commit -- mobile/metro.config.js mobile/assets/
-git commit -m "Restore mobile assets that existed only in the remote's first commit"
+# confirm it took, and that the remote has no branches yet
+git remote -v
+git ls-remote origin        # expect: no output, exit code 0
 
-# 3. check what is about to change (optional)
-git log --oneline origin/main..HEAD | wc -l
-
-# 4. push. --force-with-lease is used instead of --force: it refuses if someone
-#    else has pushed since your fetch, which --force would silently overwrite.
-git push --force-with-lease origin main
+# push
+git push -u origin main
 ```
 
-Then delete the safety branch once you are happy:
+`git push` will ask for credentials. GitHub does not accept a password here —
+use a **fine-grained personal access token** as the password:
+
+1. <https://github.com/settings/tokens?type=beta> → **Generate new token**
+2. Repository access → **Only select repositories** → `KSI-AttendanceGeofencingandBiometrics-`
+3. Permissions → **Contents: Read and write** (nothing else is needed)
+4. Copy the `github_pat_…` value and paste it when git prompts for a password.
+
+On Windows the prompt is a GUI dialog (Git Credential Manager). If it does not
+appear, or you would rather not have the token stored, push once with the token
+inline and then clean the remote:
 
 ```bash
-git branch -D remote-first-commit
+git push https://<TOKEN>@github.com/HYT-Foundation-Inc-Tech-Interns/KSI-AttendanceGeofencingandBiometrics-.git main
+git remote set-url origin https://github.com/HYT-Foundation-Inc-Tech-Interns/KSI-AttendanceGeofencingandBiometrics-.git
 ```
+
+**Revoke the token afterwards** (same settings page) once the push succeeds.
+
+> Note: the `mobile/` directory is present locally as a normal directory and is
+> not deployed. It is not referenced by `render.yaml` or the Dockerfile.
 
 ---
 
 ## Part 2 — Render (the API)
 
 1. Sign in at <https://render.com> and connect the GitHub account that owns
-   `HYT-Foundation-Inc-Tech-Interns/KlassicSolutionsInc_AttendanceGeofencing`.
+   `HYT-Foundation-Inc-Tech-Interns/KSI-AttendanceGeofencingandBiometrics-`.
 2. **New → Blueprint**, pick the repository. Render reads `render.yaml` and
    creates the service `klassic-attendance-api` (Docker, free plan, Singapore).
 3. It prompts for the six values marked `sync: false`. Copy each from your local

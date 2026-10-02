@@ -201,3 +201,6 @@ $RECYCLE.BIN/
 # Throwaway static file server for opening the built dashboard/out over a
 # tunnel on a phone. `next dev` is the normal development path.
 _serve-out.mjs
+
+# Diagnostic screenshots captured while verifying the map and face overlays.
+map-faces-*.png
