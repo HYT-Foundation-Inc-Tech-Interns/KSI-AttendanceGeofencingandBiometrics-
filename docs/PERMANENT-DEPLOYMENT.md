@@ -105,17 +105,32 @@ git remote set-url origin https://github.com/HYT-Foundation-Inc-Tech-Interns/KSI
    `HYT-Foundation-Inc-Tech-Interns/KSI-AttendanceGeofencingandBiometrics-`.
 2. **New → Blueprint**, pick the repository. Render reads `render.yaml` and
    creates the service `klassic-attendance-api` (Docker, free plan, Singapore).
-3. It prompts for the six values marked `sync: false`. Copy each from your local
-   `backend/.env` — **do not commit them**:
+3. It prompts for the thirteen values marked `sync: false`. Copy each from your
+   local `backend/.env` — **do not commit them**. The line numbers are from the
+   `backend/.env` in this repo, so you can find each one quickly:
 
-   | Render env var | Where it comes from |
-   |---|---|
-   | `DATABASE_URL` | `backend/.env` (the Supabase connection string) |
-   | `JWT_SECRET` | `backend/.env` — must be the **same** value, or every existing session is invalidated |
-   | `JWT_REFRESH_SECRET` | `backend/.env` — same warning |
-   | `HMAC_DEVICE_SIGNING_KEY` | `backend/.env` |
-   | `ENCRYPTION_KEY` | `backend/.env` |
-   | `CORS_ORIGINS` | the Pages URL from Part 3 — see the note below |
+   | Render env var | `backend/.env` line | Notes |
+   |---|---|---|
+   | `DATABASE_URL` | 8 | the Supabase connection string |
+   | `JWT_SECRET` | 14 | must be the **same** value, or every existing session is invalidated |
+   | `JWT_REFRESH_SECRET` | 15 | same warning |
+   | `HMAC_DEVICE_SIGNING_KEY` | 49 | |
+   | `ENCRYPTION_KEY` | 90 | |
+   | `SMTP_HOST` | see below | Gmail → `smtp.gmail.com` |
+   | `SMTP_PORT` | see below | `587` |
+   | `SMTP_SECURE` | see below | `false` for port 587 |
+   | `SMTP_USER` | see below | the sending Gmail address |
+   | `SMTP_PASS` | see below | a 16-character Gmail **App Password**, not the account password |
+   | `SMTP_FROM` | see below | a display string like `Name <address>`; paste it raw, no quotes |
+   | `APP_CHECKIN_URL` | 84-adjacent | leave for step 2 of Part 4 — it needs the Pages URL |
+   | `CORS_ORIGINS` | 84 | the Pages URL from Part 3 — see the note below |
+
+   **Why the SMTP block matters.** Employee creation sends the credentials by
+   email, and `backend/src/modules/mail/mail.service.ts` reads `SMTP_HOST`,
+   `SMTP_USER` and `SMTP_PASS`. These were missing from `render.yaml` entirely,
+   so deploying without them produces a service that looks healthy and silently
+   fails to email anyone. Find the four SMTP values by searching `backend/.env`
+   for `SMTP_`.
 
 4. **CORS_ORIGINS ordering.** The dashboard is a different origin from the API,
    so the browser blocks every call until this matches. You cannot know the
