@@ -1,7 +1,22 @@
 # Stage 1: Build
-FROM node:18-alpine AS builder
+#
+# Node 22 rather than 18: Node 18 went end-of-life in April 2025 and Node 20 in
+# April 2026, so both are unsupported and receive no security patches. Node 22
+# is the current LTS and matches NODE_VERSION=22 on the dashboard build.
+FROM node:22-alpine AS builder
 
 WORKDIR /app
+
+# Build toolchain.
+#
+# bcrypt is a native addon. It installs through `node-pre-gyp install
+# --fallback-to-build`, which downloads a prebuilt binary when one matches the
+# platform and otherwise compiles from source. On musl (Alpine) the prebuild is
+# often absent, and a plain node:alpine image ships no compiler, so the fallback
+# dies with "gyp ERR! find Python". These three packages are what the fallback
+# needs. Without them the image only builds on machines that happen to have a
+# matching prebuild -- which is a silent, platform-dependent failure.
+RUN apk add --no-cache python3 make g++
 
 # Copy package files
 COPY package*.json ./
@@ -17,17 +32,25 @@ COPY src ./src
 # Build the application
 RUN npm run build
 
+# Drop devDependencies, keeping the already-compiled native addons.
+#
+# Doing the prune here instead of a second `npm ci --only=production` in the
+# runtime stage means bcrypt is compiled exactly once and the runtime image
+# needs no toolchain at all. `--only=production` is also the npm 6 spelling;
+# `--omit=dev` is the current one.
+RUN npm prune --omit=dev && npm cache clean --force
+
 # Stage 2: Production
-FROM node:18-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
-# Install production dependencies only
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
+ENV NODE_ENV=production
 
-# Copy built application from builder stage
+# Reuse the pruned, already-built dependency tree. No compiler, no npm ci.
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package.json ./package.json
 
 # Create a non-root user
 RUN addgroup -g 1001 -S nodejs && \
