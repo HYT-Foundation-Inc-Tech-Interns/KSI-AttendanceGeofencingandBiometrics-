@@ -10,6 +10,23 @@ import {
 } from '../../database/entities';
 import { CreateSiteDto, UpdateSiteDto, GeofenceValidationDto } from './dto/create-site.dto';
 
+/**
+ * Ceiling on how far a weak GPS fix may widen a fence, in metres.
+ *
+ * A phone that reports +/-120 m is not lying, but honouring that in full would
+ * turn a 100 m fence into a 220 m one and make the boundary decorative. Capping
+ * it keeps the fence meaningful while still absorbing the ordinary cold-start
+ * error that was refusing people who were standing inside the building.
+ */
+export const ACCURACY_ALLOWANCE_CAP_M = 50;
+
+/** The fence widening a fix's reported accuracy earns, bounded and never negative. */
+export function clampAccuracyAllowance(accuracyMeters?: number | null): number {
+  if (accuracyMeters === undefined || accuracyMeters === null) return 0;
+  if (!Number.isFinite(accuracyMeters)) return 0;
+  return Math.min(Math.max(accuracyMeters, 0), ACCURACY_ALLOWANCE_CAP_M);
+}
+
 @Injectable()
 export class SitesService {
   constructor(
@@ -154,20 +171,28 @@ export class SitesService {
   /**
    * Validate if a GPS point is within a site's geofence
    * Server-authoritative validation (never trust client)
+   *
+   * The verdict widens the fence by the fix's own reported accuracy, capped at
+   * ACCURACY_ALLOWANCE_CAP_M. Without that, a cold-start fix that the handset
+   * itself describes as +/-80 m is treated as an exact point, and a worker
+   * standing in the building is told they are not there.
    */
   async validateGeofence(
     siteId: string,
     organizationId: string,
     validationDto: GeofenceValidationDto,
-  ): Promise<{ withinGeofence: boolean; distance?: number }> {
+  ): Promise<{ withinGeofence: boolean; distance?: number; allowanceMeters: number }> {
     const site = await this.findOne(siteId, organizationId);
 
     const { latitude, longitude } = validationDto;
+
+    const allowanceMeters = clampAccuracyAllowance(validationDto.accuracyMeters);
 
     // Try circular geofence first.
     // Both sides of ST_DWithin must be `geography`, otherwise the radius is
     // interpreted in degrees of the raw SRID 4326 coordinates (1 degree ≈ 111 km),
     // which would make a 100 m geofence accept points thousands of km away.
+    // The allowance is added inside PostGIS so the authority stays in one place.
     if (site.geofenceCenter && site.geofenceRadiusM) {
       const result = await this.siteRepository.query(
         `
@@ -175,7 +200,7 @@ export class SitesService {
           ST_DWithin(
             geofence_center,
             ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-            geofence_radius_m
+            geofence_radius_m + $4
           ) as within_geofence,
           ST_Distance(
             geofence_center,
@@ -184,35 +209,38 @@ export class SitesService {
         FROM sites
         WHERE id = $3 AND geofence_center IS NOT NULL
         `,
-        [longitude, latitude, siteId],
+        [longitude, latitude, siteId, allowanceMeters],
       );
 
       if (result && result.length > 0) {
         return {
           withinGeofence: result[0].within_geofence,
           distance: Math.round(Number(result[0].distance)),
+          allowanceMeters,
         };
       }
     }
 
-    // Try polygon geofence
+    // Try polygon geofence. A polygon has no radius to widen, so a weak fix is
+    // instead buffered outwards by the allowance in metres.
     if (site.geofencePolygon) {
       const result = await this.siteRepository.query(
         `
         SELECT
           ST_Contains(
-            geofence_polygon::geometry,
+            ST_Buffer(geofence_polygon::geography, $4)::geometry,
             ST_SetSRID(ST_MakePoint($1, $2), 4326)::geometry
           ) as within_geofence
         FROM sites
         WHERE id = $3 AND geofence_polygon IS NOT NULL
         `,
-        [longitude, latitude, siteId],
+        [longitude, latitude, siteId, allowanceMeters],
       );
 
       if (result && result.length > 0) {
         return {
           withinGeofence: result[0].within_geofence,
+          allowanceMeters,
         };
       }
     }

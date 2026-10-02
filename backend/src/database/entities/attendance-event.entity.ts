@@ -68,8 +68,14 @@ export class AttendanceEvent {
   })
   gpsPoint: GeoJsonPoint;
 
+  /*
+   * Nullable in the database and in the type. It was typed `number` while the
+   * column allowed NULL, which was invisible only because nothing ever wrote
+   * to it -- every row had NULL, and the one mapper that read it had to defend
+   * against `null` anyway.
+   */
   @Column({ name: 'gps_accuracy_meters', type: 'numeric', nullable: true })
-  gpsAccuracyMeters: number;
+  gpsAccuracyMeters: number | null;
 
   @Column({ name: 'is_mock_location', type: 'boolean', default: false })
   isMockLocation: boolean;

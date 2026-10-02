@@ -293,6 +293,37 @@ export default function AttendancePage() {
     }
   };
 
+  /**
+   * Void a punch that was accepted but should not stand.
+   *
+   * The case this exists for is an accidental punch. With one check-in and one
+   * check-out allowed per day, a mis-tap locks the worker out until tomorrow,
+   * and there was no way for anyone to undo it. Voiding marks the event
+   * rejected, which takes it out of the day's count so the worker can punch
+   * again -- while keeping the row and the audit entry, so the correction is
+   * visible rather than a silent deletion.
+   */
+  const handleVoid = async (eventId: string) => {
+    const reason = window.prompt(
+      'Why is this punch being voided? (for example: accidental check-in)'
+    );
+    if (!reason) return;
+
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+
+    setPendingActionId(eventId);
+    try {
+      await api.rejectAttendanceEvent(token, eventId, reason);
+      applyUpdatedStatus(eventId, 'rejected');
+      setSelectedEvent(null);
+    } catch (err: any) {
+      alert(err?.message || 'Failed to void punch');
+    } finally {
+      setPendingActionId(null);
+    }
+  };
+
   const handleExport = async () => {
     const token = localStorage.getItem('accessToken');
     if (!token) return;
@@ -532,6 +563,13 @@ export default function AttendancePage() {
   // Admins act on events that are not yet in a final state.
   const canReview = (status: AttendanceStatus) =>
     status === 'flagged' || status === 'pending';
+
+  /*
+   * A verified punch is final -- unless an administrator voids it. That is the
+   * only way to undo an accidental punch, so it is offered on exactly the
+   * events that already count toward the day.
+   */
+  const canVoid = (status: AttendanceStatus) => status === 'verified';
 
   /*
    * Headline counters. One brand treatment for the neutral counts; only
@@ -805,6 +843,16 @@ export default function AttendancePage() {
                             </Button>
                           </>
                         )}
+                        {canVoid(event.status) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={pendingActionId === event.id}
+                            onClick={() => handleVoid(event.id)}
+                          >
+                            Void
+                          </Button>
+                        )}
                         <Button size="sm" variant="ghost" onClick={() => setSelectedEvent(event)}>
                           View
                         </Button>
@@ -960,6 +1008,15 @@ export default function AttendancePage() {
                       Reject
                     </Button>
                   </>
+                )}
+                {canVoid(selectedEvent.status) && (
+                  <Button
+                    disabled={pendingActionId === selectedEvent.id}
+                    onClick={() => handleVoid(selectedEvent.id)}
+                    variant="destructive"
+                  >
+                    Void punch
+                  </Button>
                 )}
               </div>
             </CardContent>

@@ -131,6 +131,14 @@ function glyphPinHtml(tone: PinTone): string {
  * The status glyph survives as a badge on the rim. A face says who, never
  * whether they were inside, and status in this app is not allowed to rest on
  * colour alone.
+ *
+ * The explicit z-indexes are load-bearing. Leaflet's own stylesheet contains
+ * `.leaflet-map-pane svg { z-index: 200; }`, which exists to lift its overlay
+ * and tile SVG panes above the tile images -- but it is a descendant selector,
+ * so it also matches the inline SVG in a `divIcon` marker. Left alone, the
+ * teardrop therefore paints *over* the face and the badge, and the pin reads as
+ * a plain green marker with its face invisible. Anything that has to sit on top
+ * of the pin has to out-rank that 200.
  */
 function facePinHtml(tone: PinTone, faceUrl: string): string {
   const t = TONES[tone];
@@ -142,10 +150,150 @@ function facePinHtml(tone: PinTone, faceUrl: string): string {
               fill="${t.fill}" stroke="#ffffff" stroke-width="2.5"/>
       </svg>
       <img src="${faceUrl}" alt=""
-           style="position:absolute;left:6px;top:4px;width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid #ffffff;box-sizing:border-box;"/>
-      <span style="position:absolute;left:21px;top:20px;width:15px;height:15px;border-radius:50%;background:${t.fill};border:1.5px solid #ffffff;color:#ffffff;font:700 10px/15px Arial,Helvetica,sans-serif;text-align:center;box-sizing:content-box;">${t.glyph}</span>
+           style="position:absolute;left:6px;top:4px;width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid #ffffff;box-sizing:border-box;z-index:201;"/>
+      <span style="position:absolute;left:21px;top:20px;width:15px;height:15px;border-radius:50%;background:${t.fill};border:1.5px solid #ffffff;color:#ffffff;font:700 10px/15px Arial,Helvetica,sans-serif;text-align:center;box-sizing:content-box;z-index:202;">${t.glyph}</span>
     </div>
   `;
+}
+
+/**
+ * How far apart two pins must be before they stop reading as one, in pixels.
+ *
+ * Sized for the wider face pin (40 px) with a little air around it. Below this
+ * the faces overlap enough that a glance reads a crowd as a single person.
+ */
+const PIN_SEPARATION_PX = 46;
+
+/**
+ * The zoom the spread is sized against.
+ *
+ * The offset is a fixed number of metres rather than one recomputed from the
+ * live zoom, because the live zoom changes as a result of the draw -- fitting
+ * bounds to spread-out pins would move the zoom, which would change the spread,
+ * which would move the bounds again. A fixed reference breaks that loop and
+ * makes a pin's drawn offset stable while the admin zooms.
+ */
+const SPREAD_REFERENCE_ZOOM = 17;
+
+/**
+ * The furthest a pin may be drawn from the position it actually reports.
+ *
+ * Uncapped, a cluster seen at a wide zoom would ask for a circle hundreds of
+ * metres across and the pins would sail off the building. Capped, a tight
+ * cluster still overlaps when zoomed out, which is honest -- and the leader
+ * line still points at the truth.
+ */
+const MAX_SPREAD_RADIUS_M = 45;
+
+/** Web Mercator pixel coordinates. Comparable between any two points at one zoom. */
+function projectToPixels(latitude: number, longitude: number, zoom: number) {
+  const scale = 256 * Math.pow(2, zoom);
+  const sinLat = Math.sin((latitude * Math.PI) / 180);
+  return {
+    x: ((longitude + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale,
+  };
+}
+
+/** Ground metres per screen pixel, for the Web Mercator projection. */
+function metresPerPixel(latitude: number, zoom: number): number {
+  return (156543.03392 * Math.cos((latitude * Math.PI) / 180)) / Math.pow(2, zoom);
+}
+
+interface PlacedPin {
+  pin: MapPin;
+  /** Where the pin is drawn. Equal to the reported position unless `moved`. */
+  latitude: number;
+  longitude: number;
+  /** Where the pin really is. */
+  originLatitude: number;
+  originLongitude: number;
+  moved: boolean;
+}
+
+/**
+ * Pull overlapping pins apart so that every one of them can be seen.
+ *
+ * Six people punching in at the same doorway produced six pins inside 6 px of
+ * each other while a face pin is 40 px wide. The map therefore looked like it
+ * held one person, and whichever face was drawn last hid the other five -- the
+ * data was right the whole time, the drawing was not.
+ *
+ * Pins that share a spot are fanned onto a circle around their common centre,
+ * and the caller draws a leader line from each one back to its true position.
+ * So the separation never invents a location: it is legible *and* honest.
+ */
+function spreadOverlappingPins(pins: MapPin[]): PlacedPin[] {
+  const placed: PlacedPin[] = pins.map((pin) => ({
+    pin,
+    latitude: pin.latitude,
+    longitude: pin.longitude,
+    originLatitude: pin.latitude,
+    originLongitude: pin.longitude,
+    moved: false,
+  }));
+
+  const pixels = placed.map((p) =>
+    projectToPixels(p.latitude, p.longitude, SPREAD_REFERENCE_ZOOM),
+  );
+
+  // Single-linkage grouping: anything within the separation distance joins the
+  // group, and the group keeps growing while it finds new neighbours. Six
+  // people in a doorway are one group however the pairs happen to be spaced.
+  const groups: number[][] = [];
+  const assigned = new Array<boolean>(placed.length).fill(false);
+
+  for (let i = 0; i < placed.length; i++) {
+    if (assigned[i]) continue;
+
+    const group = [i];
+    assigned[i] = true;
+
+    for (let scan = 0; scan < group.length; scan++) {
+      const a = pixels[group[scan]];
+      for (let j = 0; j < placed.length; j++) {
+        if (assigned[j]) continue;
+        const b = pixels[j];
+        if (Math.hypot(a.x - b.x, a.y - b.y) <= PIN_SEPARATION_PX) {
+          assigned[j] = true;
+          group.push(j);
+        }
+      }
+    }
+
+    groups.push(group);
+  }
+
+  for (const group of groups) {
+    if (group.length < 2) continue;
+
+    const centreLat =
+      group.reduce((sum, i) => sum + placed[i].latitude, 0) / group.length;
+    const centreLng =
+      group.reduce((sum, i) => sum + placed[i].longitude, 0) / group.length;
+
+    // Radius that puts neighbouring pins exactly PIN_SEPARATION_PX apart:
+    // the chord between neighbours is 2R*sin(pi/n).
+    const wantedM =
+      (PIN_SEPARATION_PX / (2 * Math.sin(Math.PI / group.length))) *
+      metresPerPixel(centreLat, SPREAD_REFERENCE_ZOOM);
+    const radiusM = Math.min(wantedM, MAX_SPREAD_RADIUS_M);
+
+    const mPerDegreeLat = 111320;
+    const mPerDegreeLng = 111320 * Math.cos((centreLat * Math.PI) / 180);
+
+    group.forEach((index, n) => {
+      // Start at the top and go clockwise, so the order is stable between
+      // draws rather than depending on how the roster happened to be sorted.
+      const angle = (2 * Math.PI * n) / group.length - Math.PI / 2;
+      placed[index].latitude = centreLat + (radiusM * Math.cos(angle)) / mPerDegreeLat;
+      placed[index].longitude =
+        centreLng + (radiusM * Math.sin(angle)) / mPerDegreeLng;
+      placed[index].moved = true;
+    });
+  }
+
+  return placed;
 }
 
 export default function GeoMap({
@@ -274,10 +422,32 @@ export default function GeoMap({
             }
           }
 
-          for (const pin of data.pins ?? []) {
+          /*
+           * Leader lines are added before the pins so they render underneath.
+           * Only a pin that was actually moved gets one: a line from a pin to
+           * itself would just be noise.
+           */
+          const placedPins = spreadOverlappingPins(data.pins ?? []);
+
+          for (const spot of placedPins) {
+            if (!spot.moved) continue;
+            leaflet
+              .polyline(
+                [
+                  [spot.originLatitude, spot.originLongitude],
+                  [spot.latitude, spot.longitude],
+                ],
+                { color: '#6b6a6a', weight: 1, opacity: 0.65, dashArray: '3,3' },
+              )
+              .addTo(layer);
+          }
+
+          for (const spot of placedPins) {
+            const pin = spot.pin;
+
             if (
-              !Number.isFinite(pin.latitude) ||
-              !Number.isFinite(pin.longitude)
+              !Number.isFinite(spot.latitude) ||
+              !Number.isFinite(spot.longitude)
             ) {
               continue;
             }
@@ -296,7 +466,7 @@ export default function GeoMap({
 
             const geo = face ? PIN_FACE : PIN_GLYPH;
 
-            const marker = leaflet.marker([pin.latitude, pin.longitude], {
+            const marker = leaflet.marker([spot.latitude, spot.longitude], {
               icon: leaflet.divIcon({
                 className: '',
                 html: face
@@ -318,12 +488,24 @@ export default function GeoMap({
                 pin.detail
                   ? `<br/><span style="color:#6b6a6a">${escapeHtml(pin.detail)}</span>`
                   : ''
+              }${
+                /*
+                 * Say so when a pin has been fanned out. The leader line shows
+                 * it on the map, but a popup is where someone reads a position
+                 * as a fact, and this one is deliberately not exact.
+                 */
+                spot.moved
+                  ? `<br/><span style="color:#6b6a6a;font-size:11px">Pin moved aside to stay visible; the dashed line points at the exact spot.</span>`
+                  : ''
               }</div></div>`,
             );
 
             marker.on('click', () => clickRef.current?.(pin.id));
             marker.addTo(layer);
-            bounds.push([pin.latitude, pin.longitude]);
+
+            // Bounds follow the real positions, so framing the map is decided
+            // by where people are, not by how far the pins were fanned out.
+            bounds.push([spot.originLatitude, spot.originLongitude]);
           }
 
           /*

@@ -39,6 +39,19 @@ interface RefusalContext {
   captureImage?: string;
 }
 
+/**
+ * A parenthetical naming the GPS uncertainty, or nothing when the fix was good.
+ *
+ * Only worth saying when the allowance actually changed the verdict's margin:
+ * a worker refused while their phone admitted +/-40 m needs to know the number
+ * is the problem, not their position, otherwise they walk around the block
+ * trying to satisfy a fence that the fix cannot resolve.
+ */
+function describeGpsUncertainty(allowanceMeters: number): string {
+  if (allowanceMeters <= 0) return '';
+  return ` (allowing for GPS accuracy of about ${Math.round(allowanceMeters)}m)`;
+}
+
 @Injectable()
 export class AttendanceService {
   private readonly logger = new Logger(AttendanceService.name);
@@ -102,6 +115,60 @@ export class AttendanceService {
   }
 
   /**
+   * The half-open window covering one Asia/Manila calendar day.
+   *
+   * Attendance days are counted in the site's local date, not in UTC and not
+   * over a rolling 24 hours. A punch at 07:00 Manila on the 30th and another
+   * at 23:30 Manila on the 30th are the same day; 00:30 on the 31st is not.
+   *
+   * Manila has been a fixed UTC+8 offset with no daylight saving since 1978, so
+   * the shift is a constant. That is why this needs no timezone database -- and
+   * it is also what `idx_attendance_employee_date` indexes, so the range below
+   * is the same day the index computes.
+   */
+  private manilaDayWindow(at: Date): { start: Date; end: Date } {
+    const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    const manila = new Date(at.getTime() + MANILA_OFFSET_MS);
+    const start = new Date(
+      Date.UTC(manila.getUTCFullYear(), manila.getUTCMonth(), manila.getUTCDate()) -
+        MANILA_OFFSET_MS,
+    );
+
+    return { start, end: new Date(start.getTime() + DAY_MS) };
+  }
+
+  /**
+   * Everything this employee punched on one Manila day, oldest first.
+   *
+   * FLAGGED and REJECTED are both excluded, because neither is a punch that
+   * happened. FLAGGED is a refusal written by the pre-attempts-table code, and
+   * counting one as a punch is what used to lock a worker out with "already
+   * checked in" after a bad face capture. REJECTED is a punch an administrator
+   * has voided -- most often an accidental one -- and if that still counted
+   * toward the day, voiding it would not actually free the worker to punch
+   * again, which is the whole point of voiding it.
+   */
+  private async punchesOnManilaDay(
+    employeeId: string,
+    at: Date,
+  ): Promise<AttendanceEvent[]> {
+    const { start, end } = this.manilaDayWindow(at);
+
+    return this.attendanceRepository
+      .createQueryBuilder('event')
+      .where('event.employeeId = :employeeId', { employeeId })
+      .andWhere('event.serverTimestamp >= :start', { start })
+      .andWhere('event.serverTimestamp < :end', { end })
+      .andWhere('event.status NOT IN (:...ignored)', {
+        ignored: [AttendanceStatus.FLAGGED, AttendanceStatus.REJECTED],
+      })
+      .orderBy('event.serverTimestamp', 'ASC')
+      .getMany();
+  }
+
+  /**
    * Check-in: Validate geofence + biometric, create attendance event
    */
   async checkIn(
@@ -125,26 +192,28 @@ export class AttendanceService {
     }
 
     /*
-     * Check if already checked in (no matching check-out).
+     * One check-in per Manila day.
      *
-     * A FLAGGED event is one that was *denied* -- outside the geofence, or a
-     * failed face match -- so it does not represent a successful check-in and
-     * must not block a retry. Counting it did exactly that: one bad face
-     * capture locked the employee out with "already checked in. Please check
-     * out first", which they could not do because they had never got in.
+     * This used to compare only the single most recent event, which meant a
+     * worker who timed in and back out could time in again and again on the
+     * same day -- each pair looked like a fresh "last event was a check-out".
+     * It was also not date-scoped at all, so a check-in yesterday with a
+     * forgotten check-out blocked today.
+     *
+     * Now the whole day is loaded and any existing check-in refuses the punch.
+     * The counter resets on its own at the next Manila midnight, so there is
+     * nothing to clear.
      */
-    const lastEvent = await this.attendanceRepository.findOne({
-      where: { employeeId: checkInDto.employeeId },
-      order: { serverTimestamp: 'DESC' },
-    });
+    const todaysPunches = await this.punchesOnManilaDay(
+      checkInDto.employeeId,
+      new Date(),
+    );
 
-    if (
-      lastEvent &&
-      lastEvent.eventType === EventType.CHECK_IN &&
-      lastEvent.status !== AttendanceStatus.FLAGGED
-    ) {
+    const alreadyIn = todaysPunches.find((e) => e.eventType === EventType.CHECK_IN);
+
+    if (alreadyIn) {
       throw new BadRequestException(
-        'Employee already checked in. Please check out first.',
+        'You have already timed in today. You can time in again tomorrow.',
       );
     }
 
@@ -164,6 +233,7 @@ export class AttendanceService {
         {
           latitude: checkInDto.latitude,
           longitude: checkInDto.longitude,
+          accuracyMeters: checkInDto.accuracyMeters,
         },
       );
 
@@ -187,7 +257,9 @@ export class AttendanceService {
         );
 
         throw new UnauthorizedException(
-          `Check-in denied: You are ${distanceFromSite}m from the site. Please move closer.`,
+          `Check-in denied: You are ${distanceFromSite}m from the site${describeGpsUncertainty(
+            geofenceResult.allowanceMeters,
+          )}. Please move closer.`,
         );
       }
     }
@@ -244,6 +316,9 @@ export class AttendanceService {
       eventType: EventType.CHECK_IN,
       deviceTimestamp: new Date(),
       gpsPoint: toGeoJsonPoint(checkInDto.longitude, checkInDto.latitude),
+      // Was never populated, so no stored punch could be audited for how much
+      // of its geofence verdict was GPS noise.
+      gpsAccuracyMeters: checkInDto.accuracyMeters ?? null,
       status: AttendanceStatus.VERIFIED,
       deviceId: checkInDto.deviceIdentifier,
       matchScore,
@@ -288,24 +363,26 @@ export class AttendanceService {
     }
 
     /*
-     * Check if employee is checked in.
+     * One check-out per Manila day, and only after a check-in on that same day.
      *
-     * A FLAGGED check-in was denied, so there is nothing to check out of --
-     * treating it as an active check-in would let a denied attempt be paired
-     * with a real check-out and produce a nonsense event sequence.
+     * The old rule read only the most recent event, so a check-in from a
+     * previous day with a forgotten check-out would let today's check-out
+     * through, and a check-out yesterday blocked today entirely.
      */
-    const lastEvent = await this.attendanceRepository.findOne({
-      where: { employeeId: checkOutDto.employeeId },
-      order: { serverTimestamp: 'DESC' },
-    });
+    const todaysPunches = await this.punchesOnManilaDay(
+      checkOutDto.employeeId,
+      new Date(),
+    );
 
-    if (
-      !lastEvent ||
-      lastEvent.eventType === EventType.CHECK_OUT ||
-      lastEvent.status === AttendanceStatus.FLAGGED
-    ) {
+    if (!todaysPunches.some((e) => e.eventType === EventType.CHECK_IN)) {
       throw new BadRequestException(
-        'No active check-in found. Please check in first.',
+        'No check-in found for today. Please time in first.',
+      );
+    }
+
+    if (todaysPunches.some((e) => e.eventType === EventType.CHECK_OUT)) {
+      throw new BadRequestException(
+        'You have already timed out today. You can time out again tomorrow.',
       );
     }
 
@@ -325,6 +402,7 @@ export class AttendanceService {
         {
           latitude: checkOutDto.latitude,
           longitude: checkOutDto.longitude,
+          accuracyMeters: checkOutDto.accuracyMeters,
         },
       );
 
@@ -348,7 +426,9 @@ export class AttendanceService {
         );
 
         throw new UnauthorizedException(
-          `Check-out denied: You are ${distanceFromSite}m from the site. Please move closer.`,
+          `Check-out denied: You are ${distanceFromSite}m from the site${describeGpsUncertainty(
+            geofenceResult.allowanceMeters,
+          )}. Please move closer.`,
         );
       }
     }
@@ -403,6 +483,7 @@ export class AttendanceService {
       eventType: EventType.CHECK_OUT,
       deviceTimestamp: new Date(),
       gpsPoint: toGeoJsonPoint(checkOutDto.longitude, checkOutDto.latitude),
+      gpsAccuracyMeters: checkOutDto.accuracyMeters ?? null,
       status: AttendanceStatus.VERIFIED,
       deviceId: checkOutDto.deviceIdentifier,
       matchScore,

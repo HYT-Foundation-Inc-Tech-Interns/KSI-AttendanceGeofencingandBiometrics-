@@ -68,6 +68,29 @@ export class GeofenceValidationDto {
   @IsNumber()
   @IsNotEmpty()
   longitude: number;
+
+  /*
+   * How uncertain the handset says this fix is, in metres (the `accuracy` of
+   * a GeolocationPosition). Optional, and omitted by callers that have no fix
+   * metadata.
+   *
+   * This is what stops a cold-start GPS fix from being read as a fact. The
+   * first fix after opening a page is routinely triangulated from Wi-Fi and
+   * cell towers and lands 50-150 m away with `accuracy` admitting as much, so
+   * a raw point-in-circle test refuses a worker who is standing inside the
+   * building. When this is supplied the fence is widened by it (bounded -- see
+   * ACCURACY_ALLOWANCE_CAP_M), which is the honest reading of a point that
+   * could be anywhere inside its own error circle.
+   */
+  @ApiPropertyOptional({
+    example: 18,
+    description:
+      'GPS accuracy in metres. Widens the fence by up to 50 m so a weak fix is not read as being elsewhere.',
+  })
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  accuracyMeters?: number;
 }
 
 export class GetSiteResponseDto {

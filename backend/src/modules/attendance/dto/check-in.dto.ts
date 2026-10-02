@@ -62,6 +62,27 @@ export class CheckInDto {
   @Max(180)
   longitude: number;
 
+  /*
+   * The handset's own uncertainty for the fix above, in metres.
+   *
+   * Optional, so an older client keeps working. It exists because the geofence
+   * used to be a raw point-in-circle test: a cold-start fix triangulated from
+   * Wi-Fi can land 100 m away and be refused as "you are not there" even though
+   * the phone itself reported +/-100 m. The server widens the fence by this
+   * (bounded) rather than trusting the point as exact, and stores it so an
+   * administrator can see how much of the verdict was GPS noise.
+   */
+  @ApiProperty({
+    description:
+      'GPS accuracy in metres, as reported by the device. Widens the geofence by up to 50 m.',
+    example: 18,
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  accuracyMeters?: number;
+
   @ApiProperty({
     description:
       'Base64-encoded face image for verification (JPEG/PNG). Optional; prefer faceDescriptor.',
@@ -142,6 +163,27 @@ export class CheckOutDto {
   @Min(-180)
   @Max(180)
   longitude: number;
+
+  /*
+   * The handset's own uncertainty for the fix above, in metres.
+   *
+   * Optional, so an older client keeps working. It exists because the geofence
+   * used to be a raw point-in-circle test: a cold-start fix triangulated from
+   * Wi-Fi can land 100 m away and be refused as "you are not there" even though
+   * the phone itself reported +/-100 m. The server widens the fence by this
+   * (bounded) rather than trusting the point as exact, and stores it so an
+   * administrator can see how much of the verdict was GPS noise.
+   */
+  @ApiProperty({
+    description:
+      'GPS accuracy in metres, as reported by the device. Widens the geofence by up to 50 m.',
+    example: 18,
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  accuracyMeters?: number;
 
   @ApiProperty({
     description:

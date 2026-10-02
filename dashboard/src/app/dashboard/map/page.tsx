@@ -228,13 +228,18 @@ export default function MapPage() {
               focus={focus}
               height={480}
               onPinClick={(id) => setSelectedId(id)}
-              emptyMessage="No employee has checked in yet, so there is nothing to place."
+              emptyMessage="Nobody has punched in yet today, so there is nothing to place. The live view resets each morning -- earlier days are in Attendance and Reports."
             />
             <p className="text-xs text-silver-800 mt-3">
               A pin with a face uses the enrolment photo where one exists, and
               the most recent punch capture otherwise. Anyone with neither keeps
               a symbol pin, and the ring still carries the inside/outside
               verdict either way.
+            </p>
+            <p className="text-xs text-silver-800 mt-1.5">
+              This is a live view of today, so it starts empty each morning and
+              only shows punches from today. Someone who has not punched yet
+              today has no pin. Past days stay in Attendance and Reports.
             </p>
           </CardContent>
         </Card>

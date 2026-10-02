@@ -488,21 +488,27 @@ export class ApiClient {
    * standing outside the fence should learn that before the upload, so the
    * check-in screen calls this first. The result is advisory: the server
    * re-validates on submit and is the only authority.
+   *
+   * `accuracyMeters` matters. The server widens the fence by the fix's own
+   * reported accuracy, so passing it here keeps this pre-check agreeing with
+   * the submit instead of refusing someone the server would have accepted.
    */
   async validateGeofence(
     token: string,
     siteId: string,
     latitude: number,
-    longitude: number
+    longitude: number,
+    accuracyMeters?: number
   ) {
-    return this.request<{ withinGeofence: boolean; distance?: number }>(
-      `/sites/${siteId}/validate-geofence`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ latitude, longitude }),
-        token,
-      }
-    );
+    return this.request<{
+      withinGeofence: boolean;
+      distance?: number;
+      allowanceMeters?: number;
+    }>(`/sites/${siteId}/validate-geofence`, {
+      method: 'POST',
+      body: JSON.stringify({ latitude, longitude, accuracyMeters }),
+      token,
+    });
   }
 
   /**
@@ -525,6 +531,8 @@ export class ApiClient {
       siteId: string;
       latitude: number;
       longitude: number;
+      /** The device's own uncertainty for the fix, in metres. */
+      accuracyMeters?: number;
       faceImage?: string;
       faceDescriptor?: number[];
       captureImage?: string;
@@ -553,6 +561,8 @@ export class ApiClient {
       siteId: string;
       latitude: number;
       longitude: number;
+      /** The device's own uncertainty for the fix, in metres. */
+      accuracyMeters?: number;
       faceImage?: string;
       faceDescriptor?: number[];
       captureImage?: string;

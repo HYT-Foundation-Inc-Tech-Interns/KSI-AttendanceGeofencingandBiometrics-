@@ -120,6 +120,29 @@ function formatClock(iso: string | Date | undefined): string {
     : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Short calendar date, for naming the day a past punch happened on. */
+function formatDay(iso: string | Date | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d.getTime())
+    ? ''
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/**
+ * The Asia/Manila calendar date of an instant, as `YYYY-MM-DD`.
+ *
+ * The server allows one check-in and one check-out per Asia/Manila day, and
+ * Manila is a fixed UTC+8 with no daylight saving, so this is a constant shift
+ * -- the same one the server's rule uses. The screen has to count the day the
+ * same way the server does, or it will offer a button the server refuses.
+ */
+function manilaDateKey(iso: string | Date): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return new Date(d.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 /** Turn a GeolocationPositionError into something a field worker can act on. */
 function describeGeoError(err: unknown): string {
   const code = (err as GeolocationPositionError | undefined)?.code;
@@ -183,6 +206,21 @@ export default function CheckInPage() {
   const [siteId, setSiteId] = useState('');
   const [lastEventType, setLastEventType] = useState<string | null>(null);
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
+
+  /*
+   * Today's punches, counted in the site's local day.
+   *
+   * The server allows one check-in and one check-out per Asia/Manila day. The
+   * screen used to read only the most recent event of any age, so someone who
+   * had already timed in and out today was still shown a "Check In" button --
+   * which the server then refused, and someone who forgot to time out
+   * yesterday was shown "Check Out". Both are the button lying about what is
+   * possible, so the screen now counts the same day the server enforces.
+   */
+  const [todayPunches, setTodayPunches] = useState<{
+    checkInAt: string | null;
+    checkOutAt: string | null;
+  }>({ checkInAt: null, checkOutAt: null });
   const [loadingContext, setLoadingContext] = useState(false);
 
   /*
@@ -213,6 +251,9 @@ export default function CheckInPage() {
     siteId: string;
     withinGeofence: boolean;
     distance?: number;
+    /* How far the fence was widened by the fix's own reported accuracy. Shown
+       so a worker can tell a real "move closer" from a weak GPS signal. */
+    allowanceMeters?: number;
   } | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState('');
@@ -305,8 +346,15 @@ export default function CheckInPage() {
    */
   const [secure, setSecure] = useState(true);
   const employeeId = employeeIdOf(user);
-  const nextAction: 'check_in' | 'check_out' =
-    lastEventType === 'check_in' ? 'check_out' : 'check_in';
+  /*
+   * What is still possible today, mirroring the server's rule exactly: one
+   * check-in, then one check-out, then nothing more until tomorrow.
+   */
+  const nextAction: 'check_in' | 'check_out' | 'done' = todayPunches.checkOutAt
+    ? 'done'
+    : todayPunches.checkInAt
+      ? 'check_out'
+      : 'check_in';
 
   const selectedSite = useMemo(
     () => sites.find((s) => s.id === siteId) ?? null,
@@ -438,13 +486,38 @@ export default function CheckInPage() {
         }
 
         // The history endpoint orders by serverTimestamp DESC, so index 0 is
-        // the latest event and decides whether this is a check-in or check-out.
+        // the latest event, whatever day it fell on.
         const events = asArray<{
           eventType?: string;
           serverTimestamp?: string;
+          status?: string;
         }>(attendance as never);
         setLastEventType(events[0]?.eventType ?? null);
         setLastEventAt(events[0]?.serverTimestamp ?? null);
+
+        /*
+         * Today only, and ignoring anything voided or flagged -- exactly the
+         * rows the server counts toward the day. A punch an administrator
+         * voided must stop counting here too, or the screen would keep
+         * refusing an action the server would now allow.
+         */
+        const today = manilaDateKey(new Date());
+        const todays = events.filter(
+          (e) =>
+            !!e.serverTimestamp &&
+            manilaDateKey(e.serverTimestamp) === today &&
+            e.status !== 'rejected' &&
+            e.status !== 'flagged'
+        );
+
+        setTodayPunches({
+          checkInAt:
+            todays.find((e) => e.eventType === 'check_in')?.serverTimestamp ??
+            null,
+          checkOutAt:
+            todays.find((e) => e.eventType === 'check_out')?.serverTimestamp ??
+            null,
+        });
       } catch (err) {
         if (isPasswordChangeRequired(err)) {
           setForced(true);
@@ -641,17 +714,68 @@ export default function CheckInPage() {
     return canvas.toDataURL('image/jpeg', 0.72);
   };
 
+  /**
+   * How good a fix must be before we stop waiting for a better one, in metres.
+   */
+  const GOOD_FIX_ACCURACY_M = 25;
+
+  /**
+   * How long to keep watching for a better fix before settling for the best so
+   * far. Long enough for a cold GPS lock outdoors, short enough that a worker
+   * is not left staring at a spinner.
+   */
+  const BEST_FIX_WAIT_MS = 10000;
+
+  /**
+   * Read the best position available, rather than the first one offered.
+   *
+   * `getCurrentPosition` resolves with whatever the handset has at that moment.
+   * On a cold start that is routinely a Wi-Fi or cell-tower fix a hundred
+   * metres out, with `accuracy` admitting as much -- and treating that as an
+   * exact point is what told people standing inside the building that they were
+   * not there. So this keeps watching until the fix is good enough or the wait
+   * runs out, and always resolves with the most accurate fix it saw rather than
+   * the most recent.
+   */
   const readPosition = () =>
     new Promise<GeolocationPosition>((resolve, reject) => {
       if (!navigator.geolocation) {
         reject(new Error('This browser does not support location access.'));
         return;
       }
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0,
-      });
+
+      let best: GeolocationPosition | null = null;
+      let lastError: unknown = null;
+      let watchId = 0;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        navigator.geolocation.clearWatch(watchId);
+        if (timer) clearTimeout(timer);
+
+        if (best) resolve(best);
+        else reject(lastError ?? new Error('Could not determine your location.'));
+      };
+
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          if (!best || position.coords.accuracy < best.coords.accuracy) {
+            best = position;
+          }
+          if (position.coords.accuracy <= GOOD_FIX_ACCURACY_M) finish();
+        },
+        (error) => {
+          lastError = error;
+          // A denial will never improve by waiting for it.
+          if (error.code === 1) finish();
+        },
+        { enableHighAccuracy: true, timeout: BEST_FIX_WAIT_MS, maximumAge: 0 },
+      );
+
+      timer = setTimeout(finish, BEST_FIX_WAIT_MS);
     });
 
   /**
@@ -674,11 +798,18 @@ export default function CheckInPage() {
       setMyPosition({ latitude, longitude, accuracy });
 
       try {
-        const check = await api.validateGeofence(token, siteId, latitude, longitude);
+        const check = await api.validateGeofence(
+          token,
+          siteId,
+          latitude,
+          longitude,
+          accuracy,
+        );
         setGeofenceCheck({
           siteId,
           withinGeofence: check.withinGeofence,
           distance: check.distance,
+          allowanceMeters: check.allowanceMeters,
         });
       } catch {
         setGeofenceCheck(null);
@@ -881,6 +1012,9 @@ export default function CheckInPage() {
 
   const handleSubmit = async () => {
     if (!token || !employeeId || !siteId) return;
+    // Nothing is possible once the day's pair is used up; the button is
+    // replaced by the done panel, and this is the backstop.
+    if (nextAction === 'done') return;
     setSubmitting(true);
     setError('');
 
@@ -892,12 +1026,23 @@ export default function CheckInPage() {
       // verdict. A thrown error (e.g. a site with no geofence configured) is
       // not a rejection, so it falls through to the server.
       try {
-        const check = await api.validateGeofence(token, siteId, latitude, longitude);
+        const check = await api.validateGeofence(
+          token,
+          siteId,
+          latitude,
+          longitude,
+          accuracy,
+        );
         if (check && check.withinGeofence === false) {
+          const allowance = check.allowanceMeters ?? 0;
           throw new Error(
             `You are about ${Math.round(check.distance ?? 0)} m from ${
               selectedSite?.name ?? 'the site'
-            }. Move closer and try again.`
+            }` +
+              (allowance > 0
+                ? ` (already allowing for GPS accuracy of about ${Math.round(allowance)} m)`
+                : '') +
+              '. Move closer and try again.'
           );
         }
       } catch (preCheckErr) {
@@ -914,6 +1059,9 @@ export default function CheckInPage() {
         siteId,
         latitude,
         longitude,
+        // Sent so the server can widen the fence by the fix's own uncertainty
+        // and record how much of the verdict was GPS noise.
+        accuracyMeters: accuracy,
         ...face,
         deviceIdentifier: getDeviceId(),
       };
@@ -1220,15 +1368,29 @@ export default function CheckInPage() {
                   </div>
                 </div>
 
-                {lastEventType && (
+                {todayPunches.checkInAt || todayPunches.checkOutAt ? (
                   <div className="flex items-center gap-2 text-sm text-muted">
                     <CheckCircle2 className="h-4 w-4 text-brand-600" />
                     <span>
-                      Last {lastEventType === 'check_in' ? 'check-in' : 'check-out'} at{' '}
+                      Today:{' '}
+                      {todayPunches.checkInAt
+                        ? `timed in at ${formatClock(todayPunches.checkInAt)}`
+                        : 'not timed in yet'}
+                      {todayPunches.checkOutAt
+                        ? `, timed out at ${formatClock(todayPunches.checkOutAt)}`
+                        : ''}
+                    </span>
+                  </div>
+                ) : lastEventType ? (
+                  <div className="flex items-center gap-2 text-sm text-muted">
+                    <CheckCircle2 className="h-4 w-4 text-brand-600" />
+                    <span>
+                      Last {lastEventType === 'check_in' ? 'check-in' : 'check-out'}{' '}
+                      {formatDay(lastEventAt || undefined)} at{' '}
                       {formatClock(lastEventAt || undefined)}
                     </span>
                   </div>
-                )}
+                ) : null}
 
                 <div className="space-y-1.5">
                   <label htmlFor="site" className="text-sm font-medium text-ink">
@@ -1470,47 +1632,69 @@ export default function CheckInPage() {
               </div>
             )}
 
-            <Button
-              className="w-full"
-              size="lg"
-              onClick={handleSubmit}
-              disabled={submitting || loadingContext || !siteId || !secure || faceBlocking}
-            >
-              {submitting ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="animate-spin h-4 w-4" />
-                  Verifying…
-                </span>
-              ) : faceBlocking ? (
-                <span className="flex items-center gap-2">
-                  {faceModelState === 'idle' || faceModelState === 'loading' ? (
-                    <>
+            {nextAction === 'done' ? (
+              /*
+               * Both punches for the day are used. The server will refuse a
+               * third, so the button is replaced instead of offered and then
+               * rejected -- which is exactly what used to happen, and read as
+               * the system being broken rather than the day being over.
+               */
+              <div className="rounded-lg border border-brand-200 bg-brand-50 p-4 text-center">
+                <div className="flex justify-center mb-2">
+                  <CheckCircle2 className="h-6 w-6 text-brand-600" />
+                </div>
+                <p className="text-sm font-medium text-ink">You are done for today</p>
+                <p className="text-xs text-muted mt-1">
+                  Timed in at {formatClock(todayPunches.checkInAt || undefined)} and
+                  timed out at {formatClock(todayPunches.checkOutAt || undefined)}.
+                  You can time in again tomorrow.
+                </p>
+              </div>
+            ) : (
+              <>
+                <Button
+                  className="w-full"
+                  size="lg"
+                  onClick={handleSubmit}
+                  disabled={submitting || loadingContext || !siteId || !secure || faceBlocking}
+                >
+                  {submitting ? (
+                    <span className="flex items-center gap-2">
                       <Loader2 className="animate-spin h-4 w-4" />
-                      Preparing face recognition…
-                    </>
+                      Verifying…
+                    </span>
+                  ) : faceBlocking ? (
+                    <span className="flex items-center gap-2">
+                      {faceModelState === 'idle' || faceModelState === 'loading' ? (
+                        <>
+                          <Loader2 className="animate-spin h-4 w-4" />
+                          Preparing face recognition…
+                        </>
+                      ) : (
+                        <>
+                          <AlertCircle className="h-4 w-4" />
+                          Save your face first
+                        </>
+                      )}
+                    </span>
                   ) : (
-                    <>
-                      <AlertCircle className="h-4 w-4" />
-                      Save your face first
-                    </>
+                    <span className="flex items-center gap-2">
+                      {nextAction === 'check_in' ? (
+                        <MapPin className="h-4 w-4" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4" />
+                      )}
+                      {nextAction === 'check_in' ? 'Check In' : 'Check Out'}
+                    </span>
                   )}
-                </span>
-              ) : (
-                <span className="flex items-center gap-2">
-                  {nextAction === 'check_in' ? (
-                    <MapPin className="h-4 w-4" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4" />
-                  )}
-                  {nextAction === 'check_in' ? 'Check In' : 'Check Out'}
-                </span>
-              )}
-            </Button>
+                </Button>
 
-            <p className="text-xs text-center text-muted">
-              Your location and a face reading are sent to verify this event. The
-              photo itself never leaves your phone.
-            </p>
+                <p className="text-xs text-center text-muted">
+                  Your location and a face reading are sent to verify this event. The
+                  photo itself never leaves your phone.
+                </p>
+              </>
+            )}
           </div>
         )}
 

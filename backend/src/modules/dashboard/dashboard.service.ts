@@ -134,6 +134,12 @@ export class DashboardService {
    * Rendering a week-old fix as "current location" would be a claim an admin
    * could act on and be wrong about.
    *
+   * That is also why the view is scoped to the current Asia/Manila day. This is
+   * a live view of today's field, so it starts empty each morning: a pin means
+   * "punched here today", and anyone who has not punched yet today is simply
+   * absent rather than shown at a stale position. Attendance history is
+   * untouched by this -- only what the live map draws.
+   *
    * The inside/outside verdict is computed in PostGIS rather than in the
    * browser for the same reason check-in is validated on the server: a client
    * that draws its own boundary can disagree with the server that enforces it.
@@ -221,6 +227,9 @@ export class DashboardService {
                ae.gps_accuracy_meters, ae.is_mock_location, ae.capture_image
         FROM attendance_events ae
         WHERE ae.employee_id = e.id
+          AND ae.status NOT IN ('flagged', 'rejected')
+          AND date(ae.server_timestamp AT TIME ZONE 'Asia/Manila')
+              = date(now() AT TIME ZONE 'Asia/Manila')
         ORDER BY ae.server_timestamp DESC
         LIMIT 1
       ) last_seen ON TRUE
