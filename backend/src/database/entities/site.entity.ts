@@ -59,6 +59,31 @@ export class Site {
   @Column({ type: 'text', default: 'Asia/Manila', nullable: false })
   timezone: string;
 
+  /*
+   * When the working day is supposed to start, as `HH:mm` in the site's own
+   * timezone. Nullable: a site that has not been given one simply has no
+   * lateness measured, which is different from being on time.
+   *
+   * Read as `time`, not as a timestamp. It is a daily recurring moment, and
+   * storing it as a timestamp would invite it to be read as a specific date.
+   *
+   * The transformer trims Postgres' `HH:mm:ss` down to `HH:mm` on every read.
+   * An `<input type="time">` rejects the seconds form and renders blank, so a
+   * saved shift start would look unsaved the moment the form was reopened --
+   * and because this is the entity, every endpoint that returns a site is
+   * covered, not just the ones that remember to format it.
+   */
+  @Column({
+    name: 'shift_start_time',
+    type: 'time',
+    nullable: true,
+    transformer: {
+      to: (value: string | null) => value,
+      from: (value: string | null) => (value ? String(value).slice(0, 5) : null),
+    },
+  })
+  shiftStartTime: string | null;
+
   @Column({
     type: 'enum',
     enum: SiteStatus,

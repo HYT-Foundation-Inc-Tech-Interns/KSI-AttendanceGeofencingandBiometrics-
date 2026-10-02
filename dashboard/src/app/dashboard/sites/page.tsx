@@ -28,6 +28,12 @@ interface Site {
   } | null;
   geofenceRadiusM: number;
   timezone: string;
+  /**
+   * `HH:mm` shift start this site's check-ins are measured against, or null
+   * when the site has none. Optional because older API builds did not return
+   * it, and a missing field must not break the page.
+   */
+  shiftStartTime?: string | null;
   status: 'active' | 'inactive';
   createdAt: string;
   updatedAt: string;
@@ -49,6 +55,7 @@ export default function SitesPage() {
     geofenceRadiusM: '100',
     timezone: 'Asia/Manila',
     status: 'active',
+    shiftStartTime: '',
   });
 
   useEffect(() => {
@@ -93,6 +100,8 @@ export default function SitesPage() {
         geofenceRadiusM: parseInt(formData.geofenceRadiusM),
         timezone: formData.timezone,
         status: formData.status,
+        // '' clears the shift start; the API stores null.
+        shiftStartTime: formData.shiftStartTime || null,
       };
 
       await api.createSite(token, payload);
@@ -121,6 +130,8 @@ export default function SitesPage() {
         geofenceRadiusM: parseInt(formData.geofenceRadiusM),
         timezone: formData.timezone,
         status: formData.status,
+        // '' clears the shift start; the API stores null.
+        shiftStartTime: formData.shiftStartTime || null,
       };
 
       await api.updateSite(token, selectedSite.id, payload);
@@ -160,6 +171,7 @@ export default function SitesPage() {
       geofenceRadiusM: site.geofenceRadiusM.toString(),
       timezone: site.timezone,
       status: site.status,
+      shiftStartTime: site.shiftStartTime ?? '',
     });
     setShowEditModal(true);
   };
@@ -178,6 +190,7 @@ export default function SitesPage() {
       geofenceRadiusM: '100',
       timezone: 'Asia/Manila',
       status: 'active',
+      shiftStartTime: '',
     });
   };
 
@@ -272,6 +285,7 @@ export default function SitesPage() {
                 <TableHead>Address</TableHead>
                 <TableHead>Geofence</TableHead>
                 <TableHead>Timezone</TableHead>
+                <TableHead>Shift Start</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -294,6 +308,13 @@ export default function SitesPage() {
                       </div>
                     </TableCell>
                     <TableCell>{site.timezone}</TableCell>
+                    <TableCell>
+                      {site.shiftStartTime ? (
+                        <span className="font-medium">{site.shiftStartTime}</span>
+                      ) : (
+                        <span className="text-silver-600">Not set</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge className={`capitalize ${getStatusColor(site.status)}`}>
                         {site.status}
@@ -416,6 +437,19 @@ export default function SitesPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
+                    <label className="text-sm font-medium">Shift Start (optional)</label>
+                    <Input
+                      type="time"
+                      value={formData.shiftStartTime}
+                      onChange={(e) => setFormData({ ...formData, shiftStartTime: e.target.value })}
+                    />
+                    <p className="text-xs text-silver-800">
+                      Check-ins after this time count as late. Leave blank to skip lateness.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
                     <label className="text-sm font-medium">Geofence Radius (meters) *</label>
                     <Input
                       required
@@ -515,6 +549,19 @@ export default function SitesPage() {
                       value={formData.longitude}
                       onChange={(e) => setFormData({ ...formData, longitude: e.target.value })}
                     />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Shift Start (optional)</label>
+                    <Input
+                      type="time"
+                      value={formData.shiftStartTime}
+                      onChange={(e) => setFormData({ ...formData, shiftStartTime: e.target.value })}
+                    />
+                    <p className="text-xs text-silver-800">
+                      Check-ins after this time count as late. Leave blank to skip lateness.
+                    </p>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">

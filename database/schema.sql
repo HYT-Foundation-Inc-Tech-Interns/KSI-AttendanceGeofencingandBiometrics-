@@ -31,6 +31,9 @@ CREATE TABLE sites (
   -- Polygon geofence (irregular campus boundaries)
   geofence_polygon GEOGRAPHY(Polygon, 4326),
   timezone TEXT NOT NULL DEFAULT 'Asia/Manila',
+  -- When the working day is meant to start, as HH:mm in the timezone above.
+  -- NULL means no lateness is measured for this site.
+  shift_start_time TIME,
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended')),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),

@@ -27,6 +27,19 @@ export function clampAccuracyAllowance(accuracyMeters?: number | null): number {
   return Math.min(Math.max(accuracyMeters, 0), ACCURACY_ALLOWANCE_CAP_M);
 }
 
+/**
+ * `HH:mm:ss` (what Postgres returns for TIME) down to `HH:mm`, or null.
+ *
+ * An HTML time input round-trips `HH:mm`, and feeding it `08:00:00` makes the
+ * field render as empty on some browsers -- so a saved shift start would look
+ * unsaved the next time the form was opened.
+ */
+export function toHhMm(value?: string | null): string | null {
+  if (!value) return null;
+  const match = /^(\d{2}):(\d{2})/.exec(String(value));
+  return match ? `${match[1]}:${match[2]}` : null;
+}
+
 @Injectable()
 export class SitesService {
   constructor(
@@ -47,6 +60,7 @@ export class SitesService {
       name: createSiteDto.name,
       address: createSiteDto.address,
       timezone: createSiteDto.timezone || 'Asia/Manila',
+      shiftStartTime: createSiteDto.shiftStartTime || null,
       status: (createSiteDto.status as SiteStatus) || SiteStatus.ACTIVE,
       geofenceCenter: hasCircular
         ? this.toPointGeoJson(createSiteDto.geofenceCenterLng!, createSiteDto.geofenceCenterLat!)
@@ -141,6 +155,16 @@ export class SitesService {
     if (updateSiteDto.address !== undefined) site.address = updateSiteDto.address;
     if (updateSiteDto.timezone !== undefined) site.timezone = updateSiteDto.timezone;
     if (updateSiteDto.status !== undefined) site.status = updateSiteDto.status as SiteStatus;
+
+    /*
+     * An empty string clears the shift start; a missing key leaves it alone.
+     * The distinction matters because the form submits `''` when the field is
+     * emptied, and treating that as "unchanged" would make a shift start
+     * impossible to remove once set.
+     */
+    if (updateSiteDto.shiftStartTime !== undefined) {
+      site.shiftStartTime = updateSiteDto.shiftStartTime || null;
+    }
 
     const { hasCircular, hasPolygon } = this.describeGeofence(updateSiteDto);
 
@@ -259,6 +283,9 @@ export class SitesService {
       site_id: site.id,
       site_name: site.name,
       timezone: site.timezone,
+      // Postgres returns TIME as HH:mm:ss; the form input and the worker-facing
+      // copy both want HH:mm, so it is trimmed here rather than in two clients.
+      shift_start_time: toHhMm(site.shiftStartTime),
     };
 
     // Circular geofence — already hydrated as a GeoJSON Point by TypeORM

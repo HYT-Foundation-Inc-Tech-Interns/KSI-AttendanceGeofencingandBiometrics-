@@ -20,7 +20,7 @@ import {
 } from '../../database/entities';
 import { BiometricService } from '../biometric/biometric.service';
 import { matchScoreOf, reasonCodeOf } from '../biometric/face-verification.error';
-import { SitesService } from '../sites/sites.service';
+import { SitesService, toHhMm } from '../sites/sites.service';
 import {
   ActingUser,
   assertMayActForEmployee,
@@ -50,6 +50,40 @@ interface RefusalContext {
 function describeGpsUncertainty(allowanceMeters: number): string {
   if (allowanceMeters <= 0) return '';
   return ` (allowing for GPS accuracy of about ${Math.round(allowanceMeters)}m)`;
+}
+
+/**
+ * Manila has been a fixed UTC+8 offset with no daylight saving since 1978, so
+ * the shift is a constant. Shared by the day-window and the time-of-day maths
+ * below so the two can never disagree about what "08:00 Manila" means.
+ */
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Minutes since midnight in Asia/Manila, e.g. 08:30 Manila -> 510. */
+function manilaMinutesOfDay(at: Date): number {
+  const shifted = new Date(at.getTime() + MANILA_OFFSET_MS);
+  return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+}
+
+/**
+ * Read a Postgres `time` column ("08:00:00") as minutes since midnight.
+ *
+ * Returns null for anything unset or unparseable rather than throwing: a site
+ * with no shift start is a valid configuration (nobody is measured against a
+ * clock), and a malformed value must not take down the whole attendance list.
+ */
+function parseShiftStartMinutes(value: string | null | undefined): number | null {
+  if (!value) return null;
+
+  const match = /^(\d{1,2}):(\d{2})/.exec(String(value));
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+
+  return hours * 60 + minutes;
 }
 
 @Injectable()
@@ -127,9 +161,6 @@ export class AttendanceService {
    * is the same day the index computes.
    */
   private manilaDayWindow(at: Date): { start: Date; end: Date } {
-    const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
-    const DAY_MS = 24 * 60 * 60 * 1000;
-
     const manila = new Date(at.getTime() + MANILA_OFFSET_MS);
     const start = new Date(
       Date.UTC(manila.getUTCFullYear(), manila.getUTCMonth(), manila.getUTCDate()) -
@@ -610,9 +641,20 @@ export class AttendanceService {
    * query string or a blob fetch per row. Inline is one request instead of
    * fifty. It is affordable because the phone sends a small face crop (~10-20
    * kB), not a full camera frame.
+   *
+   * Lateness is derived here rather than stored, so that changing a site's
+   * shift start re-reads history instead of silently leaving old punches
+   * measured against a clock that no longer applies.
    */
   private toListItem(event: AttendanceEvent) {
     const [longitude, latitude] = event.gpsPoint?.coordinates ?? [null, null];
+
+    const shiftStartMinutes = parseShiftStartMinutes(event.site?.shiftStartTime);
+    const isCheckIn = event.eventType === EventType.CHECK_IN;
+    const lateMinutes =
+      shiftStartMinutes === null || !isCheckIn
+        ? null
+        : Math.max(0, manilaMinutesOfDay(event.serverTimestamp) - shiftStartMinutes);
 
     return {
       id: event.id,
@@ -643,6 +685,12 @@ export class AttendanceService {
       flagReason: event.flagReason ?? null,
       isMockLocation: event.isMockLocation,
       createdOffline: event.createdOffline,
+      // Shift start this punch is measured against, or null when the site has
+      // none configured. `lateMinutes` is null for the same reason, and also
+      // for check-outs, where "late" has no meaning.
+      shiftStartTime: toHhMm(event.site?.shiftStartTime),
+      lateMinutes,
+      isLate: lateMinutes !== null && lateMinutes > 0,
     };
   }
 }

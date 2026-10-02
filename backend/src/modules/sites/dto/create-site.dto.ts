@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional, IsNumber, IsArray, IsEnum, Min, ValidateIf } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsNumber, IsArray, IsEnum, Min, Matches, ValidateIf } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum SiteStatus {
@@ -49,6 +49,26 @@ export class CreateSiteDto {
   @IsString()
   @IsOptional()
   timezone?: string;
+
+  /*
+   * When the working day starts at this site, as `HH:mm` in `timezone`.
+   *
+   * Optional, and an empty string is treated as "no shift start" rather than
+   * rejected, because that is what an HTML time input submits when it is
+   * cleared. A site without one has no lateness measured -- which is honest,
+   * where defaulting to midnight would mark every punch late.
+   */
+  @ApiPropertyOptional({
+    example: '08:00',
+    description:
+      'Shift start as HH:mm in the site timezone. Omit or send an empty string to measure no lateness.',
+  })
+  @IsString()
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, {
+    message: 'shiftStartTime must look like HH:mm, e.g. 08:00',
+  })
+  shiftStartTime?: string;
 
   @ApiPropertyOptional({ enum: SiteStatus, default: SiteStatus.ACTIVE })
   @IsEnum(SiteStatus)

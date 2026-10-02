@@ -77,6 +77,15 @@ interface AttendanceEvent {
   isMockLocation: boolean;
   createdOffline: boolean;
   /**
+   * Minutes past the site's shift start, or null when the site has no shift
+   * start configured and when the event is a check-out (where "late" has no
+   * meaning). Optional because older API builds did not return it.
+   */
+  lateMinutes?: number | null;
+  isLate?: boolean;
+  /** `HH:mm` shift start this punch was measured against, when there is one. */
+  shiftStartTime?: string | null;
+  /**
    * The face captured at this punch, as a small JPEG data URL, or null when no
    * image was taken or the retention sweep has cleared it.
    *
@@ -556,6 +565,17 @@ export default function AttendancePage() {
     }
   };
 
+  /*
+   * "12m" up to the hour, "1h 15m" beyond it. Minutes alone stop being readable
+   * once someone is 90 minutes late.
+   */
+  const formatLate = (minutes: number) => {
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+  };
+
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const rangeStart = total === 0 ? 0 : (page - 1) * limit + 1;
   const rangeEnd = Math.min(page * limit, total);
@@ -773,6 +793,16 @@ export default function AttendancePage() {
                         <p className="text-xs text-silver-800">
                           {formatDate(event.serverTimestamp)}
                         </p>
+                        {/*
+                          Only a check-in can be late, and only against a site
+                          that has a shift start -- the API returns null in both
+                          other cases, so this badge needs no further guarding.
+                        */}
+                        {event.isLate && event.lateMinutes != null && (
+                          <Badge variant="warning" className="mt-1">
+                            Late {formatLate(event.lateMinutes)}
+                          </Badge>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -963,6 +993,33 @@ export default function AttendancePage() {
                   <p className="text-sm text-silver-800">
                     {formatDate(selectedEvent.serverTimestamp)}
                   </p>
+                </div>
+                {/*
+                  Says *why* there is no verdict rather than showing a bare
+                  dash, because "not measured" and "on time" look identical
+                  otherwise and an administrator would read the blank as a
+                  missing value.
+                */}
+                <div>
+                  <p className="text-sm text-silver-800">Punctuality</p>
+                  {selectedEvent.lateMinutes == null ? (
+                    <p className="text-sm text-silver-800">
+                      {selectedEvent.eventType === 'check_out'
+                        ? 'Not measured for check-outs'
+                        : 'No shift start set for this site'}
+                    </p>
+                  ) : selectedEvent.lateMinutes > 0 ? (
+                    <Badge variant="warning">
+                      Late {formatLate(selectedEvent.lateMinutes)}
+                    </Badge>
+                  ) : (
+                    <Badge variant="success">On time</Badge>
+                  )}
+                  {selectedEvent.shiftStartTime && (
+                    <p className="text-xs text-silver-800 mt-1">
+                      Shift start {selectedEvent.shiftStartTime}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <p className="text-sm text-silver-800">Location</p>
