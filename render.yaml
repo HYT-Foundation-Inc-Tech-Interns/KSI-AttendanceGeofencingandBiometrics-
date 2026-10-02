@@ -120,6 +120,15 @@ services:
       # SMTP_SECURE to "false" if omitted, so both are declared explicitly here
       # to match the working local config.
       #
+      # !! THE FREE PLAN BLOCKS SMTP OUTBOUND PORTS. Render's own docs, "Deploy
+      # for Free": "Free web services can't send outbound network traffic on
+      # ports 25, 465, or 587, commonly used for SMTP." The Gmail values in
+      # backend/.env use port 587, so on the free instance the mailer will fail
+      # to connect even with a correct App Password -- and the failure looks
+      # like bad credentials, not a blocked port. To send mail on the free plan,
+      # either use a provider that offers port 2525 (Brevo, Mailgun) or move to
+      # an HTTP email API on 443. Paid instances have no such restriction.
+      #
       # SMTP_PASS for a Gmail account is a 16-character App Password, not the
       # account password. SMTP_FROM is a display string of the form
       # `Name <address>` and contains spaces and angle brackets -- paste it as
