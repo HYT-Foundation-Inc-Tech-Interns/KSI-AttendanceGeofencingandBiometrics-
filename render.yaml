@@ -71,29 +71,39 @@ services:
       - key: DEV_SKIP_GEOFENCE_VALIDATION
         value: "false"
 
-      # DEV_SKIP_BIOMETRIC_VERIFICATION must be "true" on this deployment.
+      # DEV_SKIP_BIOMETRIC_VERIFICATION must be "false" on this deployment,
+      # matching backend/.env. It previously said "true"; see the note below.
       #
-      # The name is misleading -- it is not a dev-only nicety. The server logs
-      # "No face matching service available. Biometric verification disabled."
-      # at startup, because BiometricService picks its backend at construction
-      # (priority: AWS Rekognition > InsightFace > none) and neither is
-      # configured: AWS_ACCESS_KEY_ID is empty in backend/.env, and
-      # FACE_MATCH_SERVICE_URL is commented out.
+      # The premise behind the old "true" was that verifyFace() throws
+      # "Face matching service not available" whenever neither AWS Rekognition
+      # nor InsightFace is configured, so every check-in would 401. That is out
+      # of date. BiometricService now falls back to in-process descriptor
+      # matching (DescriptorMatchService), which needs no external service and
+      # is always available -- its own comment says verification "is functional
+      # even when neither of these is configured". A real boot confirms it:
       #
-      # With this set to "false", verifyFace() throws
-      # "Face matching service not available. Please configure AWS Rekognition
-      # or InsightFace." and EVERY check-in and check-out is rejected with a
-      # 401. Verified against the running server, not inferred.
+      #   WARN [AwsRekognitionService] AWS credentials not configured. Rekognition disabled.
+      #   WARN [InsightFaceService] InsightFace service not configured
+      #   LOG  [BiometricService] No external face service configured; using
+      #                           in-process descriptor matching
       #
-      # Set it to "false" only after configuring one of those services:
-      # AWS Rekognition is billed per image and InsightFace needs a host to
-      # run inference on. Both are out of scope for a zero-budget deployment.
+      # The throw still exists, but only on the legacy IMAGE path -- reached
+      # when a caller sends faceImage instead of faceDescriptor. The /checkin
+      # page sends a descriptor (see the verifyFace() call in
+      # attendance.service.ts), so it never takes that path.
       #
-      # Consequence, stated plainly: without it, check-in verifies WHERE
-      # (geofence) but not WHO (face). An employee's credentials alone are
-      # enough to check in from anywhere inside the fence.
+      # Setting this to "true" therefore fixes nothing and instead SILENTLY
+      # DISABLES face verification, reducing check-in to verifying WHERE
+      # (geofence) but not WHO (face) -- an employee's credentials alone would
+      # be enough to check in from anywhere inside the fence. That is the
+      # opposite of what this deployment exists to do.
+      #
+      # The image path (AWS Rekognition / InsightFace) stays a separate,
+      # optional upgrade: Rekognition is billed per image and InsightFace needs
+      # a host to run inference on. Neither is required for descriptor matching
+      # to work, so neither blocks this deployment.
       - key: DEV_SKIP_BIOMETRIC_VERIFICATION
-        value: "true"
+        value: "false"
 
       - key: FACE_MATCH_THRESHOLD
         value: "0.85"
