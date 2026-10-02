@@ -5,6 +5,7 @@ import { Employee, EmployeeStatus } from '../../database/entities/employee.entit
 import { Site } from '../../database/entities/site.entity';
 import { AttendanceEvent } from '../../database/entities/attendance-event.entity';
 import { AttendanceAttempt } from '../../database/entities/attendance-attempt.entity';
+import { ACCURACY_ALLOWANCE_CAP_M } from '../sites/sites.service';
 
 @Injectable()
 export class DashboardService {
@@ -210,7 +211,12 @@ export class DashboardService {
         END                           AS face_source,
         CASE
           WHEN s.geofence_center IS NOT NULL AND s.geofence_radius_m IS NOT NULL
-            THEN ST_DWithin(s.geofence_center, last_seen.gps_point, s.geofence_radius_m)
+            THEN ST_DWithin(
+                   s.geofence_center,
+                   last_seen.gps_point,
+                   s.geofence_radius_m::double precision
+                     + LEAST(COALESCE(last_seen.gps_accuracy_meters, 0), $2::double precision)
+                 )
           WHEN s.geofence_polygon IS NOT NULL
             THEN ST_Contains(s.geofence_polygon::geometry, last_seen.gps_point::geometry)
           ELSE NULL
@@ -246,7 +252,7 @@ export class DashboardService {
         AND e.status = 'active'
       ORDER BY e.full_name ASC
       `,
-      [organizationId],
+      [organizationId, ACCURACY_ALLOWANCE_CAP_M],
     );
 
     return {

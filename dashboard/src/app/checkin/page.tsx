@@ -153,7 +153,9 @@ function describeGeoError(err: unknown): string {
     return 'Your location is unavailable right now. Step outside or near a window and try again.';
   }
   if (code === 3) {
-    return 'Timed out while getting your location. Try again.';
+    // Only reachable after the full wait with no fix at all, so the useful
+    // advice is about the fix, not about trying again immediately.
+    return 'Could not get a location fix. Step outside or near a window, make sure location is switched on, then try again.';
   }
   return (err as Error)?.message || 'Could not determine your location.';
 }
@@ -721,10 +723,28 @@ export default function CheckInPage() {
 
   /**
    * How long to keep watching for a better fix before settling for the best so
-   * far. Long enough for a cold GPS lock outdoors, short enough that a worker
-   * is not left staring at a spinner.
+   * far.
+   *
+   * Generous, because the case this exists for is the slow one: a handset that
+   * has just come out of a pocket, or a worker who has stepped indoors, can
+   * take 20-30 s to produce its first fix at all. At 10 s that situation ended
+   * in "Timed out while getting your location" and a retry, which is a worse
+   * outcome than a slightly longer wait -- the wait only ever runs to the end
+   * when the fix is genuinely unavailable, because anything at or under
+   * GOOD_FIX_ACCURACY_M resolves immediately.
    */
-  const BEST_FIX_WAIT_MS = 10000;
+  const BEST_FIX_WAIT_MS = 30000;
+
+  /**
+   * How long the platform may go without reporting a position before it tells
+   * us so.
+   *
+   * Deliberately shorter than the overall wait, and deliberately *not* fatal:
+   * a `timeout` error means "nothing yet", not "nothing ever". The watch stays
+   * live, so a fix arriving at 20 s still wins. Only a denial (code 1) ends the
+   * attempt early, because a denial will never improve by waiting.
+   */
+  const FIX_UPDATE_TIMEOUT_MS = 10000;
 
   /**
    * Read the best position available, rather than the first one offered.
@@ -772,7 +792,7 @@ export default function CheckInPage() {
           // A denial will never improve by waiting for it.
           if (error.code === 1) finish();
         },
-        { enableHighAccuracy: true, timeout: BEST_FIX_WAIT_MS, maximumAge: 0 },
+        { enableHighAccuracy: true, timeout: FIX_UPDATE_TIMEOUT_MS, maximumAge: 0 },
       );
 
       timer = setTimeout(finish, BEST_FIX_WAIT_MS);

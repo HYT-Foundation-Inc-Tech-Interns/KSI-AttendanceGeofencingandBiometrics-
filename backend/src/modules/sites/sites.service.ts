@@ -217,6 +217,13 @@ export class SitesService {
     // interpreted in degrees of the raw SRID 4326 coordinates (1 degree ≈ 111 km),
     // which would make a 100 m geofence accept points thousands of km away.
     // The allowance is added inside PostGIS so the authority stays in one place.
+    //
+    // `geofence_radius_m` is an INT column, and `integer + $4` makes Postgres
+    // infer the parameter as an integer -- so a real handset's accuracy
+    // ("14.041000366210938", straight from `coords.accuracy`) was rejected with
+    // `invalid input syntax for type integer` and every check-in 500'd. Both
+    // sides are cast explicitly so the parameter's type never depends on what
+    // it is being added to.
     if (site.geofenceCenter && site.geofenceRadiusM) {
       const result = await this.siteRepository.query(
         `
@@ -224,7 +231,7 @@ export class SitesService {
           ST_DWithin(
             geofence_center,
             ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-            geofence_radius_m + $4
+            geofence_radius_m::double precision + $4::double precision
           ) as within_geofence,
           ST_Distance(
             geofence_center,
@@ -252,7 +259,7 @@ export class SitesService {
         `
         SELECT
           ST_Contains(
-            ST_Buffer(geofence_polygon::geography, $4)::geometry,
+            ST_Buffer(geofence_polygon::geography, $4::double precision)::geometry,
             ST_SetSRID(ST_MakePoint($1, $2), 4326)::geometry
           ) as within_geofence
         FROM sites
