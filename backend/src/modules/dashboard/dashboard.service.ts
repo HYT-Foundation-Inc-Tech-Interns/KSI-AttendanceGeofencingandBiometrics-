@@ -2,10 +2,30 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { Employee, EmployeeStatus } from '../../database/entities/employee.entity';
-import { Site } from '../../database/entities/site.entity';
-import { AttendanceEvent } from '../../database/entities/attendance-event.entity';
+import { Site, SiteStatus } from '../../database/entities/site.entity';
+import {
+  AttendanceEvent,
+  AttendanceStatus,
+} from '../../database/entities/attendance-event.entity';
 import { AttendanceAttempt } from '../../database/entities/attendance-attempt.entity';
 import { ACCURACY_ALLOWANCE_CAP_M } from '../sites/sites.service';
+import {
+  manilaDayWindow,
+  manilaMinutesOfDay,
+  parseShiftStartMinutes,
+  toHhMm,
+} from '../../common/utils/manila-time';
+
+/**
+ * How many rows a stat tile's hover list will carry.
+ *
+ * The tile shows the true total; the list is the identifying detail behind it.
+ * A cap keeps a large roster from turning a dashboard load into a megabyte of
+ * JSON -- the tile still says 312, the list says "showing the first 50". The
+ * count and the list are produced by the same filters, so the list can never
+ * show more rows than the number claims.
+ */
+const DETAIL_LIMIT = 50;
 
 @Injectable()
 export class DashboardService {
@@ -38,43 +58,224 @@ export class DashboardService {
       .getCount();
   }
 
-  async getStatistics(organizationId: string) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+  /**
+   * One row per employee who checked in today, with their arrival and lateness.
+   *
+   * DISTINCT ON, not a plain list. The tile counts *employees*, so if somebody
+   * punched twice in a day -- a refusal the admin later approved, say -- the
+   * list has to show them once as well, or the popup would contradict the
+   * number printed above it. The day's *first* punch is the arrival, which is
+   * what lateness is measured against, so the ordering inside the DISTINCT is
+   * ascending and the first row wins.
+   *
+   * The DISTINCT forces the employee id to lead the ORDER BY; the list is
+   * re-sorted newest-first afterwards, because that is how a popup reads.
+   */
+  private async checkedInTodayRows(
+    organizationId: string,
+    start: Date,
+    end: Date,
+  ): Promise<
+    Array<{
+      id: string;
+      employeeId: string;
+      employeeName: string;
+      employeeCode: string | null;
+      siteId: string | null;
+      siteName: string | null;
+      checkInTime: Date;
+      shiftStartTime: string | null;
+      lateMinutes: number | null;
+      isLate: boolean;
+    }>
+  > {
+    const rows: Array<{
+      id: string;
+      employee_id: string;
+      full_name: string;
+      employee_code: string | null;
+      site_id: string | null;
+      site_name: string | null;
+      server_timestamp: Date;
+      shift_start_time: string | null;
+    }> = await this.attendanceRepository.query(
+      `
+      SELECT * FROM (
+        SELECT DISTINCT ON (ae.employee_id)
+          ae.id,
+          ae.employee_id,
+          e.full_name,
+          e.employee_code,
+          ae.site_id,
+          s.name                AS site_name,
+          ae.server_timestamp,
+          s.shift_start_time
+        FROM attendance_events ae
+        JOIN employees e ON e.id = ae.employee_id
+        LEFT JOIN sites s ON s.id = ae.site_id
+        WHERE e.organization_id = $1
+          AND ae.event_type = 'check_in'
+          AND ae.server_timestamp >= $2
+          AND ae.server_timestamp < $3
+          AND ae.status NOT IN ('flagged', 'rejected')
+        ORDER BY ae.employee_id, ae.server_timestamp ASC
+      ) arrivals
+      ORDER BY arrivals.server_timestamp DESC
+      LIMIT $4
+      `,
+      [organizationId, start, end, DETAIL_LIMIT],
+    );
 
-    const [totalEmployees, totalSites, checkedInToday, flaggedEvents] =
-      await Promise.all([
-        this.employeeRepository.count({ 
-          where: { 
-            organizationId,
-            status: EmployeeStatus.ACTIVE
-          } 
-        }),
-        this.siteRepository.count({ 
-          where: { 
-            organizationId
-          } 
-        }),
-        this.attendanceRepository
-          .createQueryBuilder('attendance')
-          .leftJoin('attendance.employee', 'employee')
-          .where('employee.organizationId = :organizationId', { organizationId })
-          .andWhere('attendance.eventType = :type', { type: 'check_in' })
-          .andWhere('attendance.serverTimestamp >= :today', { today })
-          .andWhere('attendance.serverTimestamp < :tomorrow', { tomorrow })
-          .select('COUNT(DISTINCT attendance.employeeId)', 'count')
-          .getRawOne()
-          .then(result => parseInt(result.count) || 0),
-        this.countOpenRefusals(organizationId),
-      ]);
+    return rows
+      .map((row) => {
+        // Lateness is derived here rather than read from a column, for the same
+        // reason the attendance list derives it: it is a function of the site's
+        // current shift start, so a shift start that changes corrects history
+        // instead of leaving a stale verdict behind.
+        const shiftStartMinutes = parseShiftStartMinutes(row.shift_start_time);
+        const checkInTime = new Date(row.server_timestamp);
+        const lateMinutes =
+          shiftStartMinutes === null
+            ? null
+            : Math.max(
+                0,
+                manilaMinutesOfDay(checkInTime) - shiftStartMinutes,
+              );
+
+        return {
+          id: row.id,
+          employeeId: row.employee_id,
+          employeeName: row.full_name,
+          employeeCode: row.employee_code,
+          siteId: row.site_id,
+          siteName: row.site_name,
+          checkInTime,
+          shiftStartTime: toHhMm(row.shift_start_time),
+          lateMinutes,
+          isLate: lateMinutes !== null && lateMinutes > 0,
+        };
+      })
+      .sort((a, b) => b.checkInTime.getTime() - a.checkInTime.getTime());
+  }
+
+  async getStatistics(organizationId: string) {
+    // The day window is Asia/Manila, matching the one-punch-a-day rule and the
+    // lateness comparison. Using the server's local midnight here would put the
+    // boundary at 08:00 Manila on a UTC host, so the tile and the check-in rule
+    // would disagree about whose punch counts as today's.
+    const { start: today, end: tomorrow } = manilaDayWindow(new Date());
+
+    const [
+      totalEmployees,
+      totalSites,
+      checkedInToday,
+      flaggedEvents,
+      employeeRows,
+      siteRows,
+      checkedInRows,
+      flaggedRows,
+    ] = await Promise.all([
+      this.employeeRepository.count({
+        where: {
+          organizationId,
+          status: EmployeeStatus.ACTIVE,
+        },
+      }),
+      // The tile reads "Active Sites", so it counts sites that can actually
+      // take a punch. Counting every row (including inactive and suspended)
+      // made the number mean something the label did not say.
+      this.siteRepository.count({
+        where: {
+          organizationId,
+          status: SiteStatus.ACTIVE,
+        },
+      }),
+      this.attendanceRepository
+        .createQueryBuilder('attendance')
+        .leftJoin('attendance.employee', 'employee')
+        .where('employee.organizationId = :organizationId', { organizationId })
+        .andWhere('attendance.eventType = :type', { type: 'check_in' })
+        .andWhere('attendance.serverTimestamp >= :today', { today })
+        .andWhere('attendance.serverTimestamp < :tomorrow', { tomorrow })
+        // A flagged or rejected punch is not a punch that happened, so it must
+        // not count toward "checked in today" -- the same rule the check-in
+        // flow itself applies when deciding whether someone may punch.
+        .andWhere('attendance.status NOT IN (:...ignored)', {
+          ignored: [AttendanceStatus.FLAGGED, AttendanceStatus.REJECTED],
+        })
+        .select('COUNT(DISTINCT attendance.employeeId)', 'count')
+        .getRawOne()
+        .then((result) => parseInt(result.count) || 0),
+      this.countOpenRefusals(organizationId),
+
+      /*
+       * The detail rows behind each number, fetched with the *same* filters as
+       * the count so the hover can never disagree with the figure it explains.
+       * Deriving the list from a different endpoint is how a tile ends up
+       * saying "1" while its popup lists three people.
+       */
+      this.employeeRepository.find({
+        where: { organizationId, status: EmployeeStatus.ACTIVE },
+        relations: ['site'],
+        order: { fullName: 'ASC' },
+        take: DETAIL_LIMIT,
+      }),
+      this.siteRepository.find({
+        where: { organizationId, status: SiteStatus.ACTIVE },
+        order: { name: 'ASC' },
+        take: DETAIL_LIMIT,
+      }),
+      this.checkedInTodayRows(organizationId, today, tomorrow),
+      this.attemptRepository
+        .createQueryBuilder('attempt')
+        .leftJoinAndSelect('attempt.employee', 'employee')
+        .leftJoinAndSelect('attempt.site', 'site')
+        .where('employee.organizationId = :organizationId', { organizationId })
+        .andWhere('attempt.acknowledgedAt IS NULL')
+        .orderBy('attempt.serverTimestamp', 'DESC')
+        .take(DETAIL_LIMIT)
+        .getMany(),
+    ]);
 
     return {
       totalEmployees,
       totalSites,
       checkedInToday,
       flaggedEvents,
+      /** How many rows the lists below will carry, so the UI can say so. */
+      detailLimit: DETAIL_LIMIT,
+      details: {
+        employees: employeeRows.map((employee) => ({
+          id: employee.id,
+          employeeName: employee.fullName,
+          employeeCode: employee.employeeCode,
+          siteId: employee.siteId ?? null,
+          siteName: employee.site?.name ?? null,
+          hiredAt: employee.hiredAt ?? null,
+        })),
+        sites: siteRows.map((site) => ({
+          id: site.id,
+          name: site.name,
+          address: site.address ?? null,
+          radiusM: site.geofenceRadiusM ?? null,
+          hasPolygon: Boolean(site.geofencePolygon),
+          shiftStartTime: toHhMm(site.shiftStartTime),
+          status: site.status,
+        })),
+        checkedIn: checkedInRows,
+        flagged: flaggedRows.map((attempt) => ({
+          id: attempt.id,
+          employeeId: attempt.employeeId,
+          employeeName: attempt.employee?.fullName || 'Unknown',
+          employeeCode: attempt.employee?.employeeCode ?? null,
+          siteName: attempt.site?.name ?? null,
+          eventType: attempt.eventType,
+          reasonCode: attempt.reasonCode,
+          reason: attempt.reason || 'Unknown reason',
+          timestamp: attempt.serverTimestamp,
+          captureImage: attempt.captureImage ?? null,
+        })),
+      },
     };
   }
 

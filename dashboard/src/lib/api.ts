@@ -767,6 +767,18 @@ export class ApiClient {
   }
 
   // Dashboard
+  /**
+   * The four headline figures, plus the rows behind each one.
+   *
+   * `details` exists so a tile's hover can name the people and places the
+   * number is about. It is returned by the same endpoint that counts them,
+   * deliberately: a list fetched from a *different* endpoint carries a
+   * different filter, and a tile reading "1" above a popup listing three
+   * people is worse than no popup at all.
+   *
+   * Each list is capped at `detailLimit`; the counts above are the true
+   * totals, so the UI has to say "showing the first N" when a list is full.
+   */
   async getDashboardStatistics() {
     const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
     if (!token) {
@@ -777,6 +789,50 @@ export class ApiClient {
       totalSites: number;
       checkedInToday: number;
       flaggedEvents: number;
+      detailLimit: number;
+      details: {
+        employees: Array<{
+          id: string;
+          employeeName: string;
+          employeeCode: string | null;
+          siteId: string | null;
+          siteName: string | null;
+          hiredAt: string | null;
+        }>;
+        sites: Array<{
+          id: string;
+          name: string;
+          address: string | null;
+          radiusM: number | null;
+          hasPolygon: boolean;
+          shiftStartTime: string | null;
+          status: string;
+        }>;
+        checkedIn: Array<{
+          id: string;
+          employeeId: string;
+          employeeName: string;
+          employeeCode: string | null;
+          siteId: string | null;
+          siteName: string | null;
+          checkInTime: string;
+          shiftStartTime: string | null;
+          lateMinutes: number | null;
+          isLate: boolean;
+        }>;
+        flagged: Array<{
+          id: string;
+          employeeId: string;
+          employeeName: string;
+          employeeCode: string | null;
+          siteName: string | null;
+          eventType: 'check_in' | 'check_out';
+          reasonCode: string;
+          reason: string;
+          timestamp: string;
+          captureImage: string | null;
+        }>;
+      };
     }>('/dashboard/statistics', { token });
   }
 

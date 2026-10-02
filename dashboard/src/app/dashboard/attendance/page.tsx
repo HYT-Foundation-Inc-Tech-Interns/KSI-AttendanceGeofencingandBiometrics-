@@ -40,6 +40,7 @@ import {
   endOfMonth,
 } from 'date-fns';
 import { api } from '@/lib/api';
+import { formatLate } from '@/lib/format';
 import FaceThumb from '@/components/face-thumb';
 import {
   createZip,
@@ -563,17 +564,6 @@ export default function AttendancePage() {
     } catch {
       return timestamp;
     }
-  };
-
-  /*
-   * "12m" up to the hour, "1h 15m" beyond it. Minutes alone stop being readable
-   * once someone is 90 minutes late.
-   */
-  const formatLate = (minutes: number) => {
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    const rest = minutes % 60;
-    return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
   };
 
   const totalPages = Math.max(1, Math.ceil(total / limit));

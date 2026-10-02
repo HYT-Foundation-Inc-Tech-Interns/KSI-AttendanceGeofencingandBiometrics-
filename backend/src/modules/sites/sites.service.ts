@@ -9,6 +9,7 @@ import {
   toGeoJsonPoint,
 } from '../../database/entities';
 import { CreateSiteDto, UpdateSiteDto, GeofenceValidationDto } from './dto/create-site.dto';
+import { toHhMm } from '../../common/utils/manila-time';
 
 /**
  * Ceiling on how far a weak GPS fix may widen a fence, in metres.
@@ -27,18 +28,9 @@ export function clampAccuracyAllowance(accuracyMeters?: number | null): number {
   return Math.min(Math.max(accuracyMeters, 0), ACCURACY_ALLOWANCE_CAP_M);
 }
 
-/**
- * `HH:mm:ss` (what Postgres returns for TIME) down to `HH:mm`, or null.
- *
- * An HTML time input round-trips `HH:mm`, and feeding it `08:00:00` makes the
- * field render as empty on some browsers -- so a saved shift start would look
- * unsaved the next time the form was opened.
- */
-export function toHhMm(value?: string | null): string | null {
-  if (!value) return null;
-  const match = /^(\d{2}):(\d{2})/.exec(String(value));
-  return match ? `${match[1]}:${match[2]}` : null;
-}
+/* The `HH:mm` formatter now lives with the rest of the Manila helpers, so the
+ * geofence endpoint, the entity transformer and the attendance list cannot
+ * drift apart on the format. */
 
 @Injectable()
 export class SitesService {

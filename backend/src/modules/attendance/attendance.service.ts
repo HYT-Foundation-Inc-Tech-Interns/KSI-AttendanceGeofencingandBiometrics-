@@ -20,7 +20,13 @@ import {
 } from '../../database/entities';
 import { BiometricService } from '../biometric/biometric.service';
 import { matchScoreOf, reasonCodeOf } from '../biometric/face-verification.error';
-import { SitesService, toHhMm } from '../sites/sites.service';
+import { SitesService } from '../sites/sites.service';
+import {
+  manilaDayWindow,
+  manilaMinutesOfDay,
+  parseShiftStartMinutes,
+  toHhMm,
+} from '../../common/utils/manila-time';
 import {
   ActingUser,
   assertMayActForEmployee,
@@ -54,38 +60,9 @@ function describeGpsUncertainty(allowanceMeters: number): string {
 
 /**
  * Manila has been a fixed UTC+8 offset with no daylight saving since 1978, so
- * the shift is a constant. Shared by the day-window and the time-of-day maths
- * below so the two can never disagree about what "08:00 Manila" means.
+ * the shift is a constant. The day-window and time-of-day maths now live in
+ * `common/utils/manila-time` so the dashboard cannot compute a different day.
  */
-const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Minutes since midnight in Asia/Manila, e.g. 08:30 Manila -> 510. */
-function manilaMinutesOfDay(at: Date): number {
-  const shifted = new Date(at.getTime() + MANILA_OFFSET_MS);
-  return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
-}
-
-/**
- * Read a Postgres `time` column ("08:00:00") as minutes since midnight.
- *
- * Returns null for anything unset or unparseable rather than throwing: a site
- * with no shift start is a valid configuration (nobody is measured against a
- * clock), and a malformed value must not take down the whole attendance list.
- */
-function parseShiftStartMinutes(value: string | null | undefined): number | null {
-  if (!value) return null;
-
-  const match = /^(\d{1,2}):(\d{2})/.exec(String(value));
-  if (!match) return null;
-
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (hours > 23 || minutes > 59) return null;
-
-  return hours * 60 + minutes;
-}
-
 @Injectable()
 export class AttendanceService {
   private readonly logger = new Logger(AttendanceService.name);
@@ -149,28 +126,6 @@ export class AttendanceService {
   }
 
   /**
-   * The half-open window covering one Asia/Manila calendar day.
-   *
-   * Attendance days are counted in the site's local date, not in UTC and not
-   * over a rolling 24 hours. A punch at 07:00 Manila on the 30th and another
-   * at 23:30 Manila on the 30th are the same day; 00:30 on the 31st is not.
-   *
-   * Manila has been a fixed UTC+8 offset with no daylight saving since 1978, so
-   * the shift is a constant. That is why this needs no timezone database -- and
-   * it is also what `idx_attendance_employee_date` indexes, so the range below
-   * is the same day the index computes.
-   */
-  private manilaDayWindow(at: Date): { start: Date; end: Date } {
-    const manila = new Date(at.getTime() + MANILA_OFFSET_MS);
-    const start = new Date(
-      Date.UTC(manila.getUTCFullYear(), manila.getUTCMonth(), manila.getUTCDate()) -
-        MANILA_OFFSET_MS,
-    );
-
-    return { start, end: new Date(start.getTime() + DAY_MS) };
-  }
-
-  /**
    * Everything this employee punched on one Manila day, oldest first.
    *
    * FLAGGED and REJECTED are both excluded, because neither is a punch that
@@ -185,7 +140,7 @@ export class AttendanceService {
     employeeId: string,
     at: Date,
   ): Promise<AttendanceEvent[]> {
-    const { start, end } = this.manilaDayWindow(at);
+    const { start, end } = manilaDayWindow(at);
 
     return this.attendanceRepository
       .createQueryBuilder('event')
