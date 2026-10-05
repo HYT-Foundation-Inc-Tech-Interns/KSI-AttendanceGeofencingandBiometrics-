@@ -227,3 +227,9 @@ map-faces-*.png
 # skip build-output names like out/ dist/ build/, and a skipped directory
 # uploads as an empty site.
 dashboard-static/
+
+# Publisher bookkeeping: the .genie marker records which app a directory was
+# published as, and .workbuddy/ holds local publisher state. Both are internal
+# artifacts of the publish step, not deliverables.
+.wbapp_*.genie
+.workbuddy/
