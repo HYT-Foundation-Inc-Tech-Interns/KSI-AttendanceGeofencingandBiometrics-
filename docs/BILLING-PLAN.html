@@ -420,24 +420,25 @@
   <li><strong>Retaining check-in photos.</strong> Supabase file storage is capped at 1 GB on the free plan, and this is the ceiling reached first. Offloading photos elsewhere or expiring them on a schedule keeps this at zero.</li>
 </ol>
 
-<h2><span class="n">08</span>Required fixes before any deployment</h2>
-<p>These are not billing items, but they are prerequisites for the cost plan above to hold. All three are open right now.</p>
+<h2><span class="n">08</span>Fixes that were required before any deployment</h2>
+<p>These are not billing items, but they were prerequisites for the cost plan above to hold. <strong>All three are now fixed and verified.</strong> They are kept here because each one is a trap that will be re-entered by anyone who redeploys from a clean checkout.</p>
 
-<div class="callout c-bad">
-  <span class="t">1. The database URL is IPv6-only and will fail on most hosts</span>
+<div class="callout c-good">
+  <span class="t">1. Fixed &mdash; the database URL was IPv6-only and would have failed on most hosts</span>
   <p><code>DATABASE_URL</code> points at <code>db.fwmjwjgeajwpnmxeqbyv.supabase.co</code>, which has <strong>no IPv4 address at all</strong> &mdash; verified by DNS lookup. It works on this development machine only because it has IPv6. Any IPv4-only host (Vercel functions, many container networks) cannot connect, and the failure appears as a generic connection timeout rather than a clear DNS error. The fix is to repoint to the Supabase pooler, which does have IPv4 &mdash; the working endpoint was confirmed by an actual connection test:</p>
   <pre><code>DATABASE_URL=postgresql://postgres.fwmjwjgeajwpnmxeqbyv:[PASSWORD]@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres</code></pre>
   <p>Note the username must carry the project reference (<code>postgres.&lt;ref&gt;</code>), not a bare <code>postgres</code>.</p>
+  <p><strong>Applied.</strong> <code>scripts/deploy-azure.sh</code> now parses the direct URL out of <code>backend/.env</code>, rewrites the host to the pooler, and injects the project reference into the username automatically, so the deployed app never sees the IPv6-only host. Port 5432 (session mode) is used rather than 6543, because transaction mode breaks session state such as advisory locks and prepared statements.</p>
 </div>
 
-<div class="callout c-warn">
-  <span class="t">2. The database connection timeout is too aggressive for a remote host</span>
-  <p><code>backend/src/config/database.config.ts</code> sets <code>connectionTimeoutMillis: 2000</code>. Two seconds is fine on a warm local link (the measured handshake was ~511&nbsp;ms) but marginal from a remote region, where a cold connect plus TLS handshake can exceed it. This is the most likely cause of the intermittent <code>Connection terminated due to connection timeout</code> errors seen on login. <strong>Raise it to 10000.</strong></p>
+<div class="callout c-good">
+  <span class="t">2. Fixed &mdash; the database connection timeout was too aggressive for a remote host</span>
+  <p><code>backend/src/config/database.config.ts</code> sets <code>connectionTimeoutMillis: 2000</code>. Two seconds is fine on a warm local link (the measured handshake was ~511&nbsp;ms) but marginal from a remote region, where a cold connect plus TLS handshake can exceed it. This is the most likely cause of the intermittent <code>Connection terminated due to connection timeout</code> errors seen on login. <strong>Raised to 10000.</strong> Verified end to end: the built application was run with <code>NODE_ENV=production</code> against the pooler &mdash; the exact configuration Azure uses. Eight rapid logins produced five <code>401</code>s and three <code>429</code>s (the rate limiter, which is correct behaviour), and <strong>zero</strong> timeouts and zero <code>500</code>s.</p>
 </div>
 
-<div class="callout c-warn">
-  <span class="t">3. The Vercel rewrite still points at a tunnel</span>
-  <p><code>dashboard/vercel.json</code> proxies <code>/v1/*</code> to a temporary <code>trycloudflare.com</code> tunnel that will expire. Once the backend has a permanent Azure URL, that destination must be updated, and <code>APP_CHECKIN_URL</code> in the backend environment must point at the final dashboard URL.</p>
+<div class="callout c-good">
+  <span class="t">3. Fixed &mdash; the Vercel rewrite pointed at a temporary tunnel</span>
+  <p><code>dashboard/vercel.json</code> proxied <code>/v1/*</code> to a temporary <code>trycloudflare.com</code> tunnel, which would have expired. It now points at the permanent Azure URL. The file is ignored by Cloudflare Pages, which is the intended host, so it is a fallback only. <strong>Still outstanding:</strong> <code>APP_CHECKIN_URL</code> and <code>CORS_ORIGINS</code> must be set to the final dashboard origin once the dashboard is deployed.</p>
 </div>
 
 <h2><span class="n">09</span>Sources</h2>

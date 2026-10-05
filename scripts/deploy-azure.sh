@@ -46,8 +46,29 @@ ENVNAME="${ENVNAME:-klassic-attendance-api-env}"
 # ghcr.io rejects it with NAME_INVALID. The owner segment is lowercased from
 # `HYT-Foundation-Inc-Tech-Interns`.
 #
-# Because the repository is public the image is publicly pullable, so no
-# registry credential is needed on the container app.
+# ghcr.io packages are PRIVATE BY DEFAULT, even when they are pushed from a
+# public repository, and even though the repository's contents are world
+# readable. Container Apps then fails with:
+#
+#   BuildFailed: Authentication failed when pulling container image
+#   'ghcr.io/...:latest'. Provide 'registryCredentials' (username and token)
+#   or 'managedIdentityClientId' in your request to authenticate.
+#
+# There are exactly two ways out, and this script supports both:
+#
+#   1. Make the package public (no token needed):
+#      https://github.com/orgs/HYT-Foundation-Inc-Tech-Interns/packages/container/klassic-attendance-api/settings
+#      -> Danger Zone -> Change visibility -> Public
+#
+#   2. Keep it private and hand the app a token. Export GHCR_USER and
+#      GHCR_TOKEN before running; GHCR_TOKEN needs only `read:packages`.
+#
+#      GHCR_USER=your-github-username GHCR_TOKEN=ghp_xxx bash scripts/deploy-azure.sh
+#
+# A `GITHUB_TOKEN` inside the workflow CANNOT flip package visibility: the
+# PATCH returns an error body while curl still exits 0, so the step reports
+# success and changes nothing. That is why the workflow's "Make the package
+# public" step looks green but the package stays private.
 IMAGE="${IMAGE:-ghcr.io/hyt-foundation-inc-tech-interns/klassic-attendance-api:latest}"
 # Azure for Students attaches a `sys.regionrestriction` policy ("Allowed
 # resource deployment regions") that limits deployments to a fixed list. On this
@@ -81,6 +102,20 @@ POOLER_PORT="${POOLER_PORT:-5432}"
 
 PORT_TARGET=3000
 IMAGE_TAG="klassic-api:$(date +%Y%m%d-%H%M%S)"
+
+# Registry credentials, only if the package is private AND the user supplied a
+# token. See the IMAGE comment above for the two supported options.
+#
+# `set -u` plus an empty array is a trap: "${ARR[@]}" is an unbound-variable
+# error on bash < 4.4, so every expansion below is written in the guarded form.
+declare -a REGISTRY_ARGS=()
+if [ -n "${GHCR_TOKEN:-}" ]; then
+  REGISTRY_ARGS=(
+    --registry-server "ghcr.io"
+    --registry-username "${GHCR_USER:-}"
+    --registry-password "$GHCR_TOKEN"
+  )
+fi
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -219,6 +254,47 @@ done
 
 say "Environment: ${#ENV_ARGS[@]} variables prepared"
 
+# --- can we actually pull the image? -----------------------------------------
+
+# Ask ghcr.io anonymously. 200 means the package is public and no credential is
+# needed; 401 means it is private. Discovering this here costs one second, and
+# discovering it at deploy time costs a failed revision and a confusing
+# BuildFailed error that never mentions visibility.
+IMAGE_REPO="${IMAGE%%:*}"
+if [ "${#REGISTRY_ARGS[@]}" -eq 0 ]; then
+  CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
+    "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/tags/list" 2>/dev/null || echo 000)"
+  case "$CODE" in
+    200)
+      ok "image is publicly pullable (no registry credential needed)"
+      ;;
+    401|403)
+      die "The image at ${IMAGE_REPO} is PRIVATE, so Container Apps cannot pull it.
+
+     Pick ONE of these two fixes:
+
+     (1) Make the package public -- no token, 15 seconds:
+         https://github.com/orgs/HYT-Foundation-Inc-Tech-Interns/packages/container/klassic-attendance-api/settings
+         -> scroll to 'Danger Zone' -> 'Change visibility' -> 'Public'
+         -> type the package name to confirm, then re-run this script.
+
+     (2) Keep it private and supply a token with read:packages:
+         GHCR_USER=<your-github-username> GHCR_TOKEN=ghp_xxx bash scripts/deploy-azure.sh
+
+     Note: a repository-scoped GITHUB_TOKEN cannot change package visibility,
+     which is why the workflow's make-public step cannot fix this for you."
+      ;;
+    000)
+      printf '\033[33mwarn:\033[0m could not reach ghcr.io to check visibility; continuing\n'
+      ;;
+    *)
+      printf '\033[33mwarn:\033[0m unexpected response %s from ghcr.io; continuing\n' "$CODE"
+      ;;
+  esac
+else
+  ok "using supplied registry credentials for ${IMAGE_REPO#ghcr.io/}"
+fi
+
 # --- resource group ----------------------------------------------------------
 
 if az group show -n "$RG" >/dev/null 2>&1; then
@@ -273,6 +349,7 @@ if az containerapp show -n "$APP" -g "$RG" >/dev/null 2>&1; then
   say "Updating the existing container app to $IMAGE"
   az containerapp update -n "$APP" -g "$RG" \
     --image "$IMAGE" \
+    ${REGISTRY_ARGS[@]+"${REGISTRY_ARGS[@]}"} \
     --set-env-vars "${ENV_ARGS[@]}" \
     --only-show-errors -o none
 else
@@ -281,6 +358,7 @@ else
     -n "$APP" -g "$RG" \
     --environment "$ENVNAME" \
     --image "$IMAGE" \
+    ${REGISTRY_ARGS[@]+"${REGISTRY_ARGS[@]}"} \
     --target-port "$PORT_TARGET" \
     --ingress external \
     --min-replicas 0 --max-replicas 3 \

@@ -7,8 +7,12 @@ name: Build backend image
 # GitHub Actions fills both gaps: it builds the image on a free runner and
 # pushes it to ghcr.io. Because this repository is public, the push
 # authenticates with the automatic GITHUB_TOKEN -- no secret has to be created
-# or stored -- and the resulting image is publicly pullable, so Azure needs no
-# registry credential either.
+# or stored.
+#
+# Pulling is a separate matter. ghcr.io creates the package PRIVATE by default
+# even from a public repository, so the image is NOT anonymously pullable until
+# its visibility is changed once (see the last step). That one-off change is
+# sticky: later pushes to the same package keep it.
 #
 # The tag this produces is what `az containerapp create --image` consumes.
 
@@ -80,14 +84,29 @@ jobs:
       #     Provide 'registryCredentials' (username and token) ...
       #
       # That reads like a credentials problem but is really a visibility one.
-      # Flipping it here avoids storing a PAT: GITHUB_TOKEN already carries
-      # packages: write, and changing visibility only needs the package to be
-      # linked to this repository -- which it is, since this workflow pushed it.
-      - name: Make the package public
+      #
+      # This step TRIES to flip it, but a repository-scoped GITHUB_TOKEN cannot
+      # change an org package's visibility -- the API rejects it. Worse, plain
+      # `curl` exits 0 on an HTTP error, so this step used to report SUCCESS
+      # while changing nothing, which sent the deploy chasing a phantom
+      # credentials bug. Writing the status code to a file and checking it makes
+      # the failure visible.
+      #
+      # Non-fatal by design: the image is already built and pushed by now, so
+      # failing here would not fix anything. If it reports a warning, change the
+      # visibility once by hand -- it is sticky, so every later rebuild of this
+      # same package inherits it.
+      - name: Try to make the package public
+        continue-on-error: true
         run: |
-          set -x
-          curl -sS -X PATCH \
+          CODE="$(curl -sS -o /tmp/body.json -w '%{http_code}' -X PATCH \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${IMAGE_NAME}" \
-            -d '{"visibility":"public"}' | head -c 400
+            -d '{"visibility":"public"}' || echo 000)"
+          if [ "$CODE" = "200" ] || [ "$CODE" = "204" ]; then
+            echo "Package visibility is now public."
+          else
+            echo "--- response ---"; cat /tmp/body.json; echo
+            echo "::warning::Could not set package visibility (HTTP $CODE). A repository-scoped GITHUB_TOKEN cannot do this. Set it once by hand, then re-run the deploy: https://github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${IMAGE_NAME}/settings"
+          fi

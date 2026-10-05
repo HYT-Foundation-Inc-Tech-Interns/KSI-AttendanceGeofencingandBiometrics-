@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/v1/:path*",
-      "destination": "https://caution-solomon-sox-application.trycloudflare.com/v1/:path*"
+      "destination": "https://klassic-attendance-api.grayforest-bc45b9ed.koreacentral.azurecontainerapps.io/v1/:path*"
     }
   ]
 }

@@ -76,6 +76,14 @@ async function bootstrap() {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  const isProduction =
+    (configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV) ===
+    'production';
+
+  const devOnlyOrigins: (string | RegExp)[] = isProduction
+    ? []
+    : [/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/];
+
   app.enableCors({
     origin: [
       ...localOrigins,
@@ -83,7 +91,7 @@ async function bootstrap() {
       /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}:300[12]$/,
       /^http:\/\/172\.\d{1,3}\.\d{1,3}\.\d{1,3}:300[12]$/,
       /*
-       * Cloudflare quick tunnels.
+       * Cloudflare quick tunnels -- development only.
        *
        * A quick tunnel gets a brand-new hostname every time it starts, so
        * pinning one in CORS_ORIGINS guarantees the dashboard breaks the next
@@ -93,13 +101,18 @@ async function bootstrap() {
        * Access-Control-Allow-Origin, which the browser treats as a hard
        * block.
        *
-       * Allowing the whole namespace is a development affordance and is
-       * narrow in practice: authentication is a Bearer token read from
-       * localStorage, never a cookie, so an unrelated origin gets no ambient
-       * authority from being allowed to make the request. Production origins
-       * belong in CORS_ORIGINS.
+       * Allowing the whole namespace is tolerable as a development
+       * affordance: authentication is a Bearer token read from localStorage,
+       * never a cookie, so an unrelated origin gains no ambient authority.
+       *
+       * It is NOT tolerable in production, and the backend now has a
+       * permanent Azure URL, so it is switched off there. The reason is the
+       * `credentials: true` below: every allowed origin may send cookies,
+       * and a trycloudflare.com hostname is free and instant for anyone to
+       * obtain, so the allowlist would effectively be public. Production
+       * origins belong in CORS_ORIGINS.
        */
-      /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/,
+      ...devOnlyOrigins,
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
