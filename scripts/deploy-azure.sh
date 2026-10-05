@@ -58,20 +58,6 @@ ACR_NAME="${ACR_NAME:-ca023b128445acr}"
 REGISTRY_SERVER="${ACR_NAME}.azurecr.io"
 IMAGE="${IMAGE:-${REGISTRY_SERVER}/klassic-attendance-api:latest}"
 
-# The identity the app uses to pull. `system` means its own system-assigned
-# managed identity, so no registry password is stored anywhere. The matching
-# AcrPull grant is applied below.
-REGISTRY_IDENTITY="${REGISTRY_IDENTITY:-system}"
-
-# Built-in role definition. A fixed GUID published by Microsoft.
-ACR_PULL_ROLE_ID="7f951dda-4ed3-4680-a7ca-43fe172d538d"
-
-# A FIXED guid for the AcrPull assignment, rather than a random one per run.
-# A role assignment is identified by its GUID and PUT is an upsert, so reusing
-# the same GUID makes re-running this script idempotent instead of accumulating
-# duplicate assignments.
-ACR_PULL_ASSIGNMENT_GUID="b7c1f0a2-9d34-4e58-9a61-2f8c3d5e7a90"
-
 # Azure for Students attaches a `sys.regionrestriction` policy ("Allowed
 # resource deployment regions") that limits deployments to a fixed list. On
 # this subscription the allowed set is exactly:
@@ -305,87 +291,111 @@ else
   ok "environment created"
 fi
 
-# --- create or update the app ------------------------------------------------
-
-# Note the image is not built here. See the IMAGE comment at the top.
+# --- registry credentials ----------------------------------------------------
 #
-# The registry is deliberately NOT configured in this block.
-# `az containerapp update` has no --registry-* flags at all -- only `create`
-# does -- so configuring it inline would work on the first run and fail on
-# every later one with "unrecognized arguments". `az containerapp registry set`
-# is used below instead, which works for both paths.
+# Username/password, NOT a managed identity.
+#
+# The obvious approach is a system-assigned managed identity plus an AcrPull
+# grant. It is not available here. This Container Apps environment is an
+# *express* environment, which rejects managed identity outright:
+#
+#   ExpressEnvironmentFeatureNotSupported: 'System-assigned managed identity' is
+#   not supported for container app ... on express environments.
+#
+# Worse, once an identity IS attached, every later update fails with that same
+# error, so the app becomes un-updatable until the identity is removed. It is
+# removed here if present, and never assigned again.
+#
+# The ACR admin account is used instead. The credentials are read from Azure at
+# deploy time and written into the app's configuration; they are never placed in
+# the repository and nothing about them is committed.
+say "Reading the $ACR_NAME admin credentials"
+ACR_USER="$(az acr credential show -n "$ACR_NAME" --query username -o tsv 2>/dev/null || true)"
+ACR_PASS="$(az acr credential show -n "$ACR_NAME" --query 'passwords[0].value' -o tsv 2>/dev/null || true)"
+
+if [ -z "$ACR_USER" ] || [ -z "$ACR_PASS" ]; then
+  say "Admin account is disabled; enabling it"
+  az acr update -n "$ACR_NAME" --admin-enabled true --only-show-errors -o none
+  ACR_USER="$(az acr credential show -n "$ACR_NAME" --query username -o tsv)"
+  ACR_PASS="$(az acr credential show -n "$ACR_NAME" --query 'passwords[0].value' -o tsv)"
+fi
+[ -n "$ACR_USER" ] && [ -n "$ACR_PASS" ] || die \
+  "Could not read the ACR admin credentials for $ACR_NAME"
+ok "registry user: $ACR_USER"
+
+# --- create or update --------------------------------------------------------
+
 if az containerapp show -n "$APP" -g "$RG" >/dev/null 2>&1; then
-  say "Updating the existing container app to $IMAGE"
-  az containerapp update -n "$APP" -g "$RG" \
-    --image "$IMAGE" \
-    --set-env-vars "${ENV_ARGS[@]}" \
-    --only-show-errors -o none
+  APP_EXISTS=1
 else
-  say "Creating the container app from $IMAGE"
+  APP_EXISTS=0
+fi
+
+# An express environment does not support revision suffixes, so a stuck revision
+# cannot simply be replaced -- and the app has already been left un-pullable
+# once. FORCE_RECREATE=1 deletes it so the next create supplies credentials
+# from the very first revision, which is the only ordering an express
+# environment reliably accepts.
+if [ "$APP_EXISTS" -eq 1 ] && [ "${FORCE_RECREATE:-0}" = "1" ]; then
+  say "Deleting the existing container app (FORCE_RECREATE=1)"
+  az containerapp delete -n "$APP" -g "$RG" --yes --only-show-errors -o none
+  APP_EXISTS=0
+  ok "deleted"
+fi
+
+if [ "$APP_EXISTS" -eq 0 ]; then
+  say "Creating the container app with registry credentials from the start"
   az containerapp create \
     -n "$APP" -g "$RG" \
     --environment "$ENVNAME" \
     --image "$IMAGE" \
+    --registry-server "$REGISTRY_SERVER" \
+    --registry-username "$ACR_USER" \
+    --registry-password "$ACR_PASS" \
     --target-port "$PORT_TARGET" \
     --ingress external \
     --min-replicas 0 --max-replicas 3 \
     --env-vars "${ENV_ARGS[@]}" \
     --only-show-errors -o none
-fi
+  ok "created"
+else
+  # An identity left over from an earlier attempt makes every update fail on an
+  # express environment, so clear it first.
+  if [ -n "$(az containerapp show -n "$APP" -g "$RG" --query 'identity.principalId' -o tsv 2>/dev/null || true)" ]; then
+    say "Removing the managed identity (not supported on express environments)"
+    az containerapp identity remove -n "$APP" -g "$RG" --system-assigned \
+      --only-show-errors -o none 2>/dev/null || true
+  fi
 
-ok "container app is pointed at the image"
+  say "Binding the registry"
+  az containerapp registry set -n "$APP" -g "$RG" \
+    --server "$REGISTRY_SERVER" \
+    --username "$ACR_USER" --password "$ACR_PASS" \
+    --only-show-errors -o none
 
-# --- let the app pull from the registry --------------------------------------
+  say "Applying the image $IMAGE"
+  APPLIED=0
+  for attempt in 1 2 3 4 5 6; do
+    if az containerapp update -n "$APP" -g "$RG" \
+         --image "$IMAGE" \
+         --set-env-vars "${ENV_ARGS[@]}" \
+         --only-show-errors -o none 2>/dev/null; then
+      ok "image applied (attempt $attempt)"
+      APPLIED=1
+      break
+    fi
+    printf '\033[33mwarn://033[0m attempt %s failed; retrying in 20s\n' "$attempt"
+    sleep 20
+  done
 
-# The app pulls with its own system-assigned managed identity, so no registry
-# password is stored anywhere.
-say "Assigning a system-assigned managed identity to the app"
-PRINCIPAL_ID="$(az containerapp identity assign -n "$APP" -g "$RG" \
-  --system-assigned --query principalId -o tsv 2>/dev/null || true)"
+  [ "$APPLIED" -eq 1 ] || die "Could not apply the image after 6 attempts.
 
-if [ -z "$PRINCIPAL_ID" ]; then
-  # Already assigned on a previous run.
-  PRINCIPAL_ID="$(az containerapp identity show -n "$APP" -g "$RG" \
-    --query principalId -o tsv 2>/dev/null || true)"
-fi
-[ -n "$PRINCIPAL_ID" ] || die "Could not determine the app's managed identity"
-ok "identity: $PRINCIPAL_ID"
-
-say "Pointing the app at $REGISTRY_SERVER using that identity"
-az containerapp registry set -n "$APP" -g "$RG" \
-  --server "$REGISTRY_SERVER" --identity "$REGISTRY_IDENTITY" \
-  --only-show-errors -o none
-
-# AcrPull for that identity.
-#
-# IMPORTANT: this uses `az rest`, not `az role assignment`. On this
-# subscription every `az role assignment` verb fails with
-#
-#   MissingSubscription: The request did not have a subscription or a valid
-#   tenant level resource provider.
-#
-# even though `az role definition list` works and the ARM REST API is fine. The
-# CLI verbs are the broken part, so the assignment goes through `az rest`.
-ACR_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.ContainerRegistry/registries/${ACR_NAME}"
-ASSIGNMENT_URL="https://management.azure.com${ACR_ID}/providers/Microsoft.Authorization/roleAssignments/${ACR_PULL_ASSIGNMENT_GUID}?api-version=2022-04-01"
-ROLE_BODY="{\"properties\":{\"roleDefinitionId\":\"/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleDefinitions/${ACR_PULL_ROLE_ID}\",\"principalId\":\"${PRINCIPAL_ID}\",\"principalType\":\"ServicePrincipal\"}}"
-
-say "Granting AcrPull to $PRINCIPAL_ID"
-# PUT is an upsert, so this is safe to re-run.
-az rest --method put --url "$ASSIGNMENT_URL" \
-  --headers "Content-Type=application/json" \
-  --body "$ROLE_BODY" --only-show-errors -o none \
-  || die "Could not grant AcrPull. See the note above about az rest vs az role assignment."
-ok "AcrPull granted"
-
-# A role assignment takes a moment to propagate, and the revision may already
-# have failed its pull by the time the grant lands. Restarting makes it retry
-# with the grant in place.
-say "Restarting so the pull retries with the new identity"
-REV="$(az containerapp revision list -n "$APP" -g "$RG" --query '[0].name' -o tsv 2>/dev/null || true)"
-if [ -n "$REV" ]; then
-  az containerapp revision restart -n "$APP" -g "$RG" --revision "$REV" \
-    --only-show-errors -o none 2>/dev/null || true
+     Check the registry binding:
+       az containerapp registry list -n $APP -g $RG
+     and that the tag really exists:
+       az acr repository show-tags -n $ACR_NAME --repository klassic-attendance-api
+     If the app is wedged, recreate it:
+       FORCE_RECREATE=1 bash scripts/deploy-azure.sh"
 fi
 
 # --- scale to zero, and make it actually free while idle ---------------------
