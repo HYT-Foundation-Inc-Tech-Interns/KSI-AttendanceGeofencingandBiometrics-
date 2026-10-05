@@ -22,6 +22,14 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Deliberately NOT derived from the repository name.
+  #
+  # The repository is `KSI-AttendanceGeofencingandBiometrics-`, so lowercasing
+  # it yields a TRAILING HYPHEN. Docker image components must match
+  # [a-z0-9]+([._-][a-z0-9]+)*, which forbids a trailing separator -- ghcr.io
+  # rejects it with NAME_INVALID, "invalid repository name", and the build dies
+  # at the push step after compiling successfully.
+  IMAGE_NAME: klassic-attendance-api
 
 jobs:
   build:
@@ -32,13 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ghcr.io rejects uppercase characters in a repository path, and this
-      # repository is `KSI-AttendanceGeofencingandBiometrics-`. Without this
-      # the push fails with "invalid reference format".
-      - name: Compute a lowercase image name
+      # Only the OWNER is derived from the repository, and only to lowercase it
+      # (`HYT-Foundation-Inc-Tech-Interns`). The image name itself is the fixed
+      # IMAGE_NAME above -- the repository name cannot be used, see the comment
+      # on IMAGE_NAME.
+      - name: Compute the image name
         id: img
         run: |
-          echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "name=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to the registry
         uses: docker/login-action@v3

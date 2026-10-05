@@ -40,10 +40,15 @@ ENVNAME="${ENVNAME:-klassic-attendance-api-env}"
 # cloud. This machine has no Docker either, so neither cloud nor local building
 # is available. GitHub Actions covers both.
 #
-# ghcr.io rejects uppercase in a repository path, hence the lowercase name.
+# The image name is FIXED, not derived from the repository. The repository is
+# `KSI-AttendanceGeofencingandBiometrics-`, and lowercasing it yields a trailing
+# hyphen -- Docker image components must match [a-z0-9]+([._-][a-z0-9]+)*, so
+# ghcr.io rejects it with NAME_INVALID. The owner segment is lowercased from
+# `HYT-Foundation-Inc-Tech-Interns`.
+#
 # Because the repository is public the image is publicly pullable, so no
 # registry credential is needed on the container app.
-IMAGE="${IMAGE:-ghcr.io/hyt-foundation-inc-tech-interns/ksi-attendancegeofencingandbiometrics-:latest}"
+IMAGE="${IMAGE:-ghcr.io/hyt-foundation-inc-tech-interns/klassic-attendance-api:latest}"
 # Azure for Students attaches a `sys.regionrestriction` policy ("Allowed
 # resource deployment regions") that limits deployments to a fixed list. On this
 # subscription the allowed set is exactly:
