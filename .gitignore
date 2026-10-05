@@ -214,5 +214,9 @@ _render-check.*
 # backend/.env. CONTAINS LIVE SECRETS -- never commit this.
 _render-env.txt
 
+# Probes which Supabase pooler region the project belongs to. Reads
+# backend/.env at runtime, so it stays local alongside the other diagnostics.
+backend/_pooler-check.mjs
+
 # Diagnostic screenshots captured while verifying the map and face overlays.
 map-faces-*.png
