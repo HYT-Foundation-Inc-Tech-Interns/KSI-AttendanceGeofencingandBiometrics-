@@ -16,6 +16,22 @@ const nextConfig: NextConfig = {
   output: "export",
 
   /*
+   * Emit `route/index.html` rather than `route.html`.
+   *
+   * Without this, a static export writes `/dashboard/attendance.html` while
+   * the app links to `/dashboard/attendance`. A host with clean-URL handling
+   * (Cloudflare Pages) maps one to the other, but a plain static server --
+   * `python3 -m http.server`, which is what the built-in publisher uses --
+   * looks for a directory or an exact file and returns 404. Client-side
+   * navigation still works, so the failure only shows up on a hard refresh or
+   * a bookmarked deep link, which is exactly when it is most annoying.
+   *
+   * With trailing slashes the export writes `/dashboard/attendance/index.html`,
+   * which every static host serves correctly.
+   */
+  trailingSlash: true,
+
+  /*
    * `next/image` optimisation needs a server, which a static export does not
    * have. The app uses plain <img> tags everywhere, so this only guards
    * against a future <Image> silently breaking the export.
