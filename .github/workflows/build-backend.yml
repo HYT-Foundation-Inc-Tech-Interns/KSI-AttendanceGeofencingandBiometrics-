@@ -27,6 +27,20 @@ name: Build backend image
 # `klassic-attendance-gha` app registration, scoped to this repository and the
 # main branch, and that identity holds AcrPush on the registry only.
 #
+# The subject claim is NOT `repo:OWNER/REPO:ref:...`. GitHub now presents the
+# immutable, ID-qualified form:
+#
+#   repo:HYT-Foundation-Inc-Tech-Interns@292160981/
+#     KSI-AttendanceGeofencingandBiometrics-@1401028603:ref:refs/heads/main
+#
+# Configuring the plain owner/repo form fails with
+#
+#   AADSTS700213: No matching federated identity record found for presented
+#   assertion subject ...
+#
+# so the federated credential carries the IDs. Copy the exact subject out of
+# that error rather than typing one.
+#
 # One caveat discovered the hard way: on this subscription every
 # `az role assignment` CLI verb fails with
 #   MissingSubscription: The request did not have a subscription or a valid
