@@ -202,5 +202,13 @@ $RECYCLE.BIN/
 # tunnel on a phone. `next dev` is the normal development path.
 _serve-out.mjs
 
+# One-command bring-up for the demo stack (backend + static server + two
+# Cloudflare quick tunnels). Hardcodes local binary paths, so it stays local.
+_stack-up.sh
+
+# Headless-browser smoke check that logs in and screenshots the deployed app.
+# Needs the Playwright cache and local binary paths, so it stays local.
+_render-check.*
+
 # Diagnostic screenshots captured while verifying the map and face overlays.
 map-faces-*.png
