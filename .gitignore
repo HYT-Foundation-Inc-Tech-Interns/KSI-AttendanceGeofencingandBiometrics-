@@ -210,5 +210,9 @@ _stack-up.sh
 # Needs the Playwright cache and local binary paths, so it stays local.
 _render-check.*
 
+# Paste-ready environment block for the Render dashboard, generated from
+# backend/.env. CONTAINS LIVE SECRETS -- never commit this.
+_render-env.txt
+
 # Diagnostic screenshots captured while verifying the map and face overlays.
 map-faces-*.png
