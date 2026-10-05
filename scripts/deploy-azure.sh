@@ -2,26 +2,31 @@
 #
 # Deploy the Klassic attendance API to Azure Container Apps.
 #
-# Everything is built in the cloud by Azure Container Registry, so this needs
-# no local Docker -- which matters, because this machine has none installed and
-# the image has never been built end to end locally.
+# The image is built by .github/workflows/build-backend.yml and pushed to
+# Azure Container Registry. This script does not build anything: it points the
+# container app at the image and wires up the credentials.
 #
-# Cost: $0. Azure grants every subscription 180,000 vCPU-seconds, 360,000
-# GiB-seconds and 2,000,000 requests per calendar month, and a revision scaled
-# to zero replicas incurs no resource charge. The script pins min-replicas to 0
-# so the app is free while idle.
+# Cost: the app itself is $0. Azure grants every subscription 180,000
+# vCPU-seconds, 360,000 GiB-seconds and 2,000,000 requests per calendar month,
+# and a revision scaled to zero replicas incurs no resource charge. The script
+# pins min-replicas to 0 so the app is free while idle.
+#
+# The registry is the one recurring cost: ACR Basic is about $5/month. It
+# already existed on this subscription -- an earlier `az containerapp up` had
+# created it -- so this deployment adds nothing to it.
 #
 # Prerequisites:
 #   - Azure CLI installed   (winget install Microsoft.AzureCLI)
-#   - az login              (must be a subscription with credit -- see
+#   - az login              (a subscription with credit -- see
 #                            https://azure.microsoft.com/free/students)
 #   - backend/.env present  (it supplies the secrets; it is gitignored)
+#   - the image already pushed to ACR by the GitHub Actions workflow
 #
 # Usage:
 #   bash scripts/deploy-azure.sh
 #
 # Override any of these by exporting them first:
-#   RG, APP, LOCATION, POOLER_HOST, POOLER_PORT
+#   RG, APP, ENVNAME, ACR_NAME, LOCATION, POOLER_HOST, POOLER_PORT
 
 set -euo pipefail
 
@@ -32,47 +37,44 @@ RG="${RG:-klassic-attendance-rg}"
 APP="${APP:-klassic-attendance-api}"
 ENVNAME="${ENVNAME:-klassic-attendance-api-env}"
 
-# The image is built by .github/workflows/build-backend.yml and pushed to
-# ghcr.io -- it is NOT built in Azure.
+# --- the registry ------------------------------------------------------------
 #
-# Azure for Students blocks ACR Tasks ("TasksOperationsNotAllowed"), and ACR
-# Tasks is the mechanism `az containerapp up --source` relies on to build in the
-# cloud. This machine has no Docker either, so neither cloud nor local building
-# is available. GitHub Actions covers both.
+# Azure Container Registry, NOT ghcr.io.
 #
-# The image name is FIXED, not derived from the repository. The repository is
-# `KSI-AttendanceGeofencingandBiometrics-`, and lowercasing it yields a trailing
-# hyphen -- Docker image components must match [a-z0-9]+([._-][a-z0-9]+)*, so
-# ghcr.io rejects it with NAME_INVALID. The owner segment is lowercased from
-# `HYT-Foundation-Inc-Tech-Interns`.
+# ghcr.io was the first choice, and it does not work here: ghcr creates
+# packages PRIVATE even when they are pushed from a public repository, so
+# Container Apps cannot pull the image and the revision dies with
 #
-# ghcr.io packages are PRIVATE BY DEFAULT, even when they are pushed from a
-# public repository, and even though the repository's contents are world
-# readable. Container Apps then fails with:
+#   BuildFailed: Authentication failed when pulling container image ...
+#     Provide 'registryCredentials' (username and token) ...
 #
-#   BuildFailed: Authentication failed when pulling container image
-#   'ghcr.io/...:latest'. Provide 'registryCredentials' (username and token)
-#   or 'managedIdentityClientId' in your request to authenticate.
+# which reads like a credentials problem but is a visibility one. A workflow
+# cannot fix it either: changing an org package's visibility needs admin rights
+# that a repository-scoped GITHUB_TOKEN does not have, and the API call reports
+# success while changing nothing because curl exits 0 on an HTTP error.
 #
-# There are exactly two ways out, and this script supports both:
-#
-#   1. Make the package public (no token needed):
-#      https://github.com/orgs/HYT-Foundation-Inc-Tech-Interns/packages/container/klassic-attendance-api/settings
-#      -> Danger Zone -> Change visibility -> Public
-#
-#   2. Keep it private and hand the app a token. Export GHCR_USER and
-#      GHCR_TOKEN before running; GHCR_TOKEN needs only `read:packages`.
-#
-#      GHCR_USER=your-github-username GHCR_TOKEN=ghp_xxx bash scripts/deploy-azure.sh
-#
-# A `GITHUB_TOKEN` inside the workflow CANNOT flip package visibility: the
-# PATCH returns an error body while curl still exits 0, so the step reports
-# success and changes nothing. That is why the workflow's "Make the package
-# public" step looks green but the package stays private.
-IMAGE="${IMAGE:-ghcr.io/hyt-foundation-inc-tech-interns/klassic-attendance-api:latest}"
+# ACR has none of those problems, and the registry already existed.
+ACR_NAME="${ACR_NAME:-ca023b128445acr}"
+REGISTRY_SERVER="${ACR_NAME}.azurecr.io"
+IMAGE="${IMAGE:-${REGISTRY_SERVER}/klassic-attendance-api:latest}"
+
+# The identity the app uses to pull. `system` means its own system-assigned
+# managed identity, so no registry password is stored anywhere. The matching
+# AcrPull grant is applied below.
+REGISTRY_IDENTITY="${REGISTRY_IDENTITY:-system}"
+
+# Built-in role definition. A fixed GUID published by Microsoft.
+ACR_PULL_ROLE_ID="7f951dda-4ed3-4680-a7ca-43fe172d538d"
+
+# A FIXED guid for the AcrPull assignment, rather than a random one per run.
+# A role assignment is identified by its GUID and PUT is an upsert, so reusing
+# the same GUID makes re-running this script idempotent instead of accumulating
+# duplicate assignments.
+ACR_PULL_ASSIGNMENT_GUID="b7c1f0a2-9d34-4e58-9a61-2f8c3d5e7a90"
+
 # Azure for Students attaches a `sys.regionrestriction` policy ("Allowed
-# resource deployment regions") that limits deployments to a fixed list. On this
-# subscription the allowed set is exactly:
+# resource deployment regions") that limits deployments to a fixed list. On
+# this subscription the allowed set is exactly:
 #
 #   indiasouthcentral, koreacentral, eastasia, malaysiawest, australiaeast
 #
@@ -101,21 +103,6 @@ POOLER_HOST="${POOLER_HOST:-aws-0-ap-northeast-2.pooler.supabase.com}"
 POOLER_PORT="${POOLER_PORT:-5432}"
 
 PORT_TARGET=3000
-IMAGE_TAG="klassic-api:$(date +%Y%m%d-%H%M%S)"
-
-# Registry credentials, only if the package is private AND the user supplied a
-# token. See the IMAGE comment above for the two supported options.
-#
-# `set -u` plus an empty array is a trap: "${ARR[@]}" is an unbound-variable
-# error on bash < 4.4, so every expansion below is written in the guarded form.
-declare -a REGISTRY_ARGS=()
-if [ -n "${GHCR_TOKEN:-}" ]; then
-  REGISTRY_ARGS=(
-    --registry-server "ghcr.io"
-    --registry-username "${GHCR_USER:-}"
-    --registry-password "$GHCR_TOKEN"
-  )
-fi
 
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -148,6 +135,7 @@ az account show >/dev/null 2>&1 || die \
   "Not signed in to Azure. Run:  az login"
 
 SUBSCRIPTION="$(az account show --query name -o tsv)"
+SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
 say "Subscription: $SUBSCRIPTION"
 
 # --- read secrets out of backend/.env ----------------------------------------
@@ -254,45 +242,22 @@ done
 
 say "Environment: ${#ENV_ARGS[@]} variables prepared"
 
-# --- can we actually pull the image? -----------------------------------------
+# --- is the image actually there? --------------------------------------------
 
-# Ask ghcr.io anonymously. 200 means the package is public and no credential is
-# needed; 401 means it is private. Discovering this here costs one second, and
-# discovering it at deploy time costs a failed revision and a confusing
-# BuildFailed error that never mentions visibility.
-IMAGE_REPO="${IMAGE%%:*}"
-if [ "${#REGISTRY_ARGS[@]}" -eq 0 ]; then
-  CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
-    "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/tags/list" 2>/dev/null || echo 000)"
-  case "$CODE" in
-    200)
-      ok "image is publicly pullable (no registry credential needed)"
-      ;;
-    401|403)
-      die "The image at ${IMAGE_REPO} is PRIVATE, so Container Apps cannot pull it.
-
-     Pick ONE of these two fixes:
-
-     (1) Make the package public -- no token, 15 seconds:
-         https://github.com/orgs/HYT-Foundation-Inc-Tech-Interns/packages/container/klassic-attendance-api/settings
-         -> scroll to 'Danger Zone' -> 'Change visibility' -> 'Public'
-         -> type the package name to confirm, then re-run this script.
-
-     (2) Keep it private and supply a token with read:packages:
-         GHCR_USER=<your-github-username> GHCR_TOKEN=ghp_xxx bash scripts/deploy-azure.sh
-
-     Note: a repository-scoped GITHUB_TOKEN cannot change package visibility,
-     which is why the workflow's make-public step cannot fix this for you."
-      ;;
-    000)
-      printf '\033[33mwarn:\033[0m could not reach ghcr.io to check visibility; continuing\n'
-      ;;
-    *)
-      printf '\033[33mwarn:\033[0m unexpected response %s from ghcr.io; continuing\n' "$CODE"
-      ;;
-  esac
+# Checked here because discovering it at deploy time costs a failed revision
+# and an error that never mentions the real cause.
+say "Checking that the image exists in $ACR_NAME"
+if az acr repository show-tags -n "$ACR_NAME" --repository klassic-attendance-api \
+     -o tsv >/dev/null 2>&1; then
+  TAGS="$(az acr repository show-tags -n "$ACR_NAME" --repository klassic-attendance-api -o tsv 2>/dev/null | tr '\n' ' ')"
+  ok "found tags: ${TAGS}"
 else
-  ok "using supplied registry credentials for ${IMAGE_REPO#ghcr.io/}"
+  die "No 'klassic-attendance-api' repository in $ACR_NAME yet.
+
+     The image is built by GitHub Actions, not by this script. Trigger it with:
+       gh workflow run build-backend.yml
+     or push a change under backend/ to main. Watch it at:
+       https://github.com/HYT-Foundation-Inc-Tech-Interns/KSI-AttendanceGeofencingandBiometrics-/actions"
 fi
 
 # --- resource group ----------------------------------------------------------
@@ -340,16 +305,19 @@ else
   ok "environment created"
 fi
 
-# --- deploy ------------------------------------------------------------------
+# --- create or update the app ------------------------------------------------
 
-# Note the image is not built here. See the IMAGE comment at the top: ACR Tasks
-# are blocked on this subscription, so the build happens in GitHub Actions and
-# this script only points the container app at the result.
+# Note the image is not built here. See the IMAGE comment at the top.
+#
+# The registry is deliberately NOT configured in this block.
+# `az containerapp update` has no --registry-* flags at all -- only `create`
+# does -- so configuring it inline would work on the first run and fail on
+# every later one with "unrecognized arguments". `az containerapp registry set`
+# is used below instead, which works for both paths.
 if az containerapp show -n "$APP" -g "$RG" >/dev/null 2>&1; then
   say "Updating the existing container app to $IMAGE"
   az containerapp update -n "$APP" -g "$RG" \
     --image "$IMAGE" \
-    ${REGISTRY_ARGS[@]+"${REGISTRY_ARGS[@]}"} \
     --set-env-vars "${ENV_ARGS[@]}" \
     --only-show-errors -o none
 else
@@ -358,7 +326,6 @@ else
     -n "$APP" -g "$RG" \
     --environment "$ENVNAME" \
     --image "$IMAGE" \
-    ${REGISTRY_ARGS[@]+"${REGISTRY_ARGS[@]}"} \
     --target-port "$PORT_TARGET" \
     --ingress external \
     --min-replicas 0 --max-replicas 3 \
@@ -366,7 +333,60 @@ else
     --only-show-errors -o none
 fi
 
-ok "deployed"
+ok "container app is pointed at the image"
+
+# --- let the app pull from the registry --------------------------------------
+
+# The app pulls with its own system-assigned managed identity, so no registry
+# password is stored anywhere.
+say "Assigning a system-assigned managed identity to the app"
+PRINCIPAL_ID="$(az containerapp identity assign -n "$APP" -g "$RG" \
+  --system-assigned --query principalId -o tsv 2>/dev/null || true)"
+
+if [ -z "$PRINCIPAL_ID" ]; then
+  # Already assigned on a previous run.
+  PRINCIPAL_ID="$(az containerapp identity show -n "$APP" -g "$RG" \
+    --query principalId -o tsv 2>/dev/null || true)"
+fi
+[ -n "$PRINCIPAL_ID" ] || die "Could not determine the app's managed identity"
+ok "identity: $PRINCIPAL_ID"
+
+say "Pointing the app at $REGISTRY_SERVER using that identity"
+az containerapp registry set -n "$APP" -g "$RG" \
+  --server "$REGISTRY_SERVER" --identity "$REGISTRY_IDENTITY" \
+  --only-show-errors -o none
+
+# AcrPull for that identity.
+#
+# IMPORTANT: this uses `az rest`, not `az role assignment`. On this
+# subscription every `az role assignment` verb fails with
+#
+#   MissingSubscription: The request did not have a subscription or a valid
+#   tenant level resource provider.
+#
+# even though `az role definition list` works and the ARM REST API is fine. The
+# CLI verbs are the broken part, so the assignment goes through `az rest`.
+ACR_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.ContainerRegistry/registries/${ACR_NAME}"
+ASSIGNMENT_URL="https://management.azure.com${ACR_ID}/providers/Microsoft.Authorization/roleAssignments/${ACR_PULL_ASSIGNMENT_GUID}?api-version=2022-04-01"
+ROLE_BODY="{\"properties\":{\"roleDefinitionId\":\"/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.Authorization/roleDefinitions/${ACR_PULL_ROLE_ID}\",\"principalId\":\"${PRINCIPAL_ID}\",\"principalType\":\"ServicePrincipal\"}}"
+
+say "Granting AcrPull to $PRINCIPAL_ID"
+# PUT is an upsert, so this is safe to re-run.
+az rest --method put --url "$ASSIGNMENT_URL" \
+  --headers "Content-Type=application/json" \
+  --body "$ROLE_BODY" --only-show-errors -o none \
+  || die "Could not grant AcrPull. See the note above about az rest vs az role assignment."
+ok "AcrPull granted"
+
+# A role assignment takes a moment to propagate, and the revision may already
+# have failed its pull by the time the grant lands. Restarting makes it retry
+# with the grant in place.
+say "Restarting so the pull retries with the new identity"
+REV="$(az containerapp revision list -n "$APP" -g "$RG" --query '[0].name' -o tsv 2>/dev/null || true)"
+if [ -n "$REV" ]; then
+  az containerapp revision restart -n "$APP" -g "$RG" --revision "$REV" \
+    --only-show-errors -o none 2>/dev/null || true
+fi
 
 # --- scale to zero, and make it actually free while idle ---------------------
 

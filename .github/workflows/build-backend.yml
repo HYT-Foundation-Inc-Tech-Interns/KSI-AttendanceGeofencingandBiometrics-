@@ -3,18 +3,36 @@ name: Build backend image
 # Azure for Students blocks ACR Tasks ("TasksOperationsNotAllowed"), which is
 # the mechanism `az containerapp up --source` uses to build an image in the
 # cloud. This machine also has no Docker, so a local build is not an option.
+# GitHub Actions fills both gaps: it builds the image on a free runner.
 #
-# GitHub Actions fills both gaps: it builds the image on a free runner and
-# pushes it to ghcr.io. Because this repository is public, the push
-# authenticates with the automatic GITHUB_TOKEN -- no secret has to be created
-# or stored.
+# Where the image goes
+# --------------------
+# Into Azure Container Registry `ca023b128445acr` -- NOT ghcr.io. ghcr.io was
+# the original target, but it creates packages PRIVATE even from a public
+# repository, and Azure Container Apps then cannot pull the image without
+# registryCredentials. Azure gives no way to flip that from a workflow: the
+# API needs admin rights on the package, and a repository-scoped GITHUB_TOKEN
+# does not have them (it reports success while changing nothing, because curl
+# exits 0 on an HTTP error).
 #
-# Pulling is a separate matter. ghcr.io creates the package PRIVATE by default
-# even from a public repository, so the image is NOT anonymously pullable until
-# its visibility is changed once (see the last step). That one-off change is
-# sticky: later pushes to the same package keep it.
+# ACR sidesteps the whole problem, and the registry already existed -- an
+# earlier `az containerapp up` had created it -- so this costs nothing extra.
 #
-# The tag this produces is what `az containerapp create --image` consumes.
+# Authentication: OIDC, no stored secret
+# -------------------------------------
+# `azure/login` exchanges a short-lived GitHub OIDC token for an Azure token.
+# Nothing is stored in the repository: AZURE_CLIENT_ID, AZURE_TENANT_ID and
+# AZURE_SUBSCRIPTION_ID are identifiers, not secrets, so they live here in the
+# clear. The trust is established by a federated credential on the
+# `klassic-attendance-gha` app registration, scoped to this repository and the
+# main branch, and that identity holds AcrPush on the registry only.
+#
+# One caveat discovered the hard way: on this subscription every
+# `az role assignment` CLI verb fails with
+#   MissingSubscription: The request did not have a subscription or a valid
+#   tenant level resource provider.
+# The ARM REST API itself works fine, so the role assignment was created with
+# `az rest` instead. If it ever needs recreating, use `az rest`, not the CLI.
 
 on:
   push:
@@ -25,40 +43,41 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
-  # Deliberately NOT derived from the repository name.
-  #
-  # The repository is `KSI-AttendanceGeofencingandBiometrics-`, so lowercasing
-  # it yields a TRAILING HYPHEN. Docker image components must match
-  # [a-z0-9]+([._-][a-z0-9]+)*, which forbids a trailing separator -- ghcr.io
-  # rejects it with NAME_INVALID, "invalid repository name", and the build dies
-  # at the push step after compiling successfully.
+  REGISTRY: ca023b128445acr.azurecr.io
+  ACR_NAME: ca023b128445acr
+  # The image name is fixed. It is deliberately NOT derived from the repository
+  # name: `KSI-AttendanceGeofencingandBiometrics-` lowercases to a TRAILING
+  # HYPHEN, and Docker image components must match
+  # [a-z0-9]+([._-][a-z0-9]+)*, which forbids a trailing separator.
   IMAGE_NAME: klassic-attendance-api
+
+  # Identifiers, not secrets -- safe to keep in the clear.
+  AZURE_CLIENT_ID: 3d7a3b58-b653-4dae-abef-39462a739b5f
+  AZURE_TENANT_ID: dd76a4ce-b5a9-4f00-98fb-371d2092685d
+  AZURE_SUBSCRIPTION_ID: 1bba41c3-77c1-493d-ab95-f43ab97c2dd3
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write # required for the OIDC token exchange
     steps:
       - uses: actions/checkout@v4
 
-      # Only the OWNER is derived from the repository, and only to lowercase it
-      # (`HYT-Foundation-Inc-Tech-Interns`). The image name itself is the fixed
-      # IMAGE_NAME above -- the repository name cannot be used, see the comment
-      # on IMAGE_NAME.
-      - name: Compute the image name
-        id: img
-        run: |
-          echo "name=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Log in to the registry
-        uses: docker/login-action@v3
+      - name: Log in to Azure
+        uses: azure/login@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # Writes an ACR token into ~/.docker/config.json, which the build step
+      # below picks up. This replaces docker/login-action: the registry
+      # credential comes from the OIDC-authenticated az session, so no
+      # registry password exists anywhere.
+      - name: Log in to the registry
+        run: az acr login --name "$ACR_NAME"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -71,42 +90,18 @@ jobs:
           file: ./backend/Dockerfile
           push: true
           tags: |
-            ${{ steps.img.outputs.name }}:latest
-            ${{ steps.img.outputs.name }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ghcr.io creates a package PRIVATE by default, even when it is pushed
-      # from a public repository. Azure Container Apps then cannot pull it
-      # without registryCredentials, and the deploy fails with:
-      #
-      #   BuildFailed: Authentication failed when pulling container image ...
-      #     Provide 'registryCredentials' (username and token) ...
-      #
-      # That reads like a credentials problem but is really a visibility one.
-      #
-      # This step TRIES to flip it, but a repository-scoped GITHUB_TOKEN cannot
-      # change an org package's visibility -- the API rejects it. Worse, plain
-      # `curl` exits 0 on an HTTP error, so this step used to report SUCCESS
-      # while changing nothing, which sent the deploy chasing a phantom
-      # credentials bug. Writing the status code to a file and checking it makes
-      # the failure visible.
-      #
-      # Non-fatal by design: the image is already built and pushed by now, so
-      # failing here would not fix anything. If it reports a warning, change the
-      # visibility once by hand -- it is sticky, so every later rebuild of this
-      # same package inherits it.
-      - name: Try to make the package public
-        continue-on-error: true
+      - name: Summarise
         run: |
-          CODE="$(curl -sS -o /tmp/body.json -w '%{http_code}' -X PATCH \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${IMAGE_NAME}" \
-            -d '{"visibility":"public"}' || echo 000)"
-          if [ "$CODE" = "200" ] || [ "$CODE" = "204" ]; then
-            echo "Package visibility is now public."
-          else
-            echo "--- response ---"; cat /tmp/body.json; echo
-            echo "::warning::Could not set package visibility (HTTP $CODE). A repository-scoped GITHUB_TOKEN cannot do this. Set it once by hand, then re-run the deploy: https://github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${IMAGE_NAME}/settings"
-          fi
+          {
+            echo "### Image pushed"
+            echo
+            echo '```'
+            echo "${REGISTRY}/${IMAGE_NAME}:latest"
+            echo "${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
