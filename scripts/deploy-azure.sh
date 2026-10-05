@@ -30,7 +30,39 @@ ENV_FILE="$ROOT/backend/.env"
 
 RG="${RG:-klassic-attendance-rg}"
 APP="${APP:-klassic-attendance-api}"
-LOCATION="${LOCATION:-southeastasia}"
+ENVNAME="${ENVNAME:-klassic-attendance-api-env}"
+
+# The image is built by .github/workflows/build-backend.yml and pushed to
+# ghcr.io -- it is NOT built in Azure.
+#
+# Azure for Students blocks ACR Tasks ("TasksOperationsNotAllowed"), and ACR
+# Tasks is the mechanism `az containerapp up --source` relies on to build in the
+# cloud. This machine has no Docker either, so neither cloud nor local building
+# is available. GitHub Actions covers both.
+#
+# ghcr.io rejects uppercase in a repository path, hence the lowercase name.
+# Because the repository is public the image is publicly pullable, so no
+# registry credential is needed on the container app.
+IMAGE="${IMAGE:-ghcr.io/hyt-foundation-inc-tech-interns/ksi-attendancegeofencingandbiometrics-:latest}"
+# Azure for Students attaches a `sys.regionrestriction` policy ("Allowed
+# resource deployment regions") that limits deployments to a fixed list. On this
+# subscription the allowed set is exactly:
+#
+#   indiasouthcentral, koreacentral, eastasia, malaysiawest, australiaeast
+#
+# southeastasia is NOT on it. The failure is a RequestDisallowedByAzure error
+# naming the auto-generated Log Analytics workspace, which does not obviously
+# point at a region problem -- check the policy, not the resource:
+#
+#   az policy assignment list -o json | grep -A12 listOfAllowedLocations
+#
+# koreacentral (Seoul) is chosen deliberately rather than eastasia (Hong Kong).
+# The Supabase pooler is aws-0-ap-northeast-2, which IS Seoul, so the API runs
+# in the same region as the database. That removes a ~35-40 ms round trip from
+# every query, and a single request makes several. Hong Kong is marginally
+# closer to Philippine users, but the database hop compounds and the user hop
+# does not.
+LOCATION="${LOCATION:-koreacentral}"
 
 # The Supabase pooler. The direct host (db.<ref>.supabase.co) is IPv6-only and
 # Azure Container Apps is IPv4-only, so the direct host cannot be reached from
@@ -51,8 +83,23 @@ ok()  { printf '\033[32m ok:\033[0m %s\n' "$*"; }
 
 # --- prerequisites -----------------------------------------------------------
 
+# winget updates PATH for NEW shells only, so a CLI installed moments ago is
+# invisible to an already-running session. Check the standard install location
+# before concluding it is missing.
+if ! command -v az >/dev/null 2>&1; then
+  for d in "/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin" \
+           "/c/Program Files (x86)/Microsoft SDKs/Azure/CLI2/wbin"; do
+    if [ -x "$d/az" ] || [ -f "$d/az.cmd" ]; then
+      PATH="$PATH:$d"
+      export PATH
+      break
+    fi
+  done
+fi
+
 command -v az >/dev/null 2>&1 || die \
-  "Azure CLI not found. Install it with:  winget install Microsoft.AzureCLI"
+  "Azure CLI not found. Install it with:  winget install Microsoft.AzureCLI
+     then open a NEW terminal -- an install does not reach a running shell."
 
 [ -f "$ENV_FILE" ] || die \
   "backend/.env not found. It supplies the secrets and is gitignored."
@@ -109,8 +156,8 @@ POOLER_USER="postgres.${PROJECT_REF}"
 POOLER_URL="postgresql://${POOLER_USER}:${PASSWORD}@${POOLER_HOST}:${POOLER_PORT}/${DBPATH}"
 
 say "Database: rewrote the direct host to the pooler"
-printf '     from  %s\n' "${DIRECT_URL%%@*}@db.${PROJECT_REF}.supabase.co"
-printf '     to    %s\n' "${POOLER_URL%%@*}@${POOLER_HOST}:${POOLER_PORT}"
+printf '     from  %s\n' "postgresql://<user>:***@db.${PROJECT_REF}.supabase.co"
+printf '     to    %s\n' "postgresql://${POOLER_USER}:***@${POOLER_HOST}:${POOLER_PORT}/${DBPATH}"
 
 # --- assemble the environment ------------------------------------------------
 
@@ -177,21 +224,64 @@ else
   ok "resource group created"
 fi
 
-# --- build and deploy --------------------------------------------------------
+# --- resource providers ------------------------------------------------------
 
-# `az containerapp up --source` creates the registry, builds the Dockerfile in
-# the cloud, provisions the Container Apps environment and deploys. It is the
-# one command that does not need a local Docker daemon.
-say "Building and deploying (this takes a few minutes on the first run)"
-az containerapp up \
-  --name "$APP" \
-  --resource-group "$RG" \
-  --location "$LOCATION" \
-  --source "$ROOT/backend" \
-  --target-port "$PORT_TARGET" \
-  --ingress external \
-  --env-vars "${ENV_ARGS[@]}" \
-  -o none
+# A fresh subscription has these namespaces unregistered, and `az containerapp
+# up` only registers some of them -- it fails on Microsoft.ContainerRegistry
+# with "MissingSubscriptionRegistration" *after* creating the environment, so
+# the error arrives late and looks like a different problem.
+#
+# Registration is per-subscription and one-time; it takes a minute or two each.
+# `--wait` matters: without it the very next command races the registration and
+# fails with the same error it was meant to prevent.
+say "Registering resource providers (one-time per subscription)"
+for ns in Microsoft.ContainerRegistry Microsoft.App Microsoft.OperationalInsights Microsoft.Storage; do
+  STATE="$(az provider show -n "$ns" --query registrationState -o tsv 2>/dev/null || echo NotRegistered)"
+  if [ "$STATE" = "Registered" ]; then
+    printf '     %-34s already registered\n' "$ns"
+  else
+    printf '     %-34s registering (was %s)...\n' "$ns" "$STATE"
+    az provider register -n "$ns" --wait --only-show-errors >/dev/null 2>&1 \
+      || die "Failed to register $ns. Try:  az provider register -n $ns --wait"
+    ok "  $ns registered"
+  fi
+done
+
+# --- environment -------------------------------------------------------------
+
+if az containerapp env show -n "$ENVNAME" -g "$RG" >/dev/null 2>&1; then
+  ok "Container Apps environment $ENVNAME already exists"
+else
+  say "Creating the Container Apps environment (first run only, a few minutes)"
+  az containerapp env create \
+    -n "$ENVNAME" -g "$RG" --location "$LOCATION" \
+    --only-show-errors -o none
+  ok "environment created"
+fi
+
+# --- deploy ------------------------------------------------------------------
+
+# Note the image is not built here. See the IMAGE comment at the top: ACR Tasks
+# are blocked on this subscription, so the build happens in GitHub Actions and
+# this script only points the container app at the result.
+if az containerapp show -n "$APP" -g "$RG" >/dev/null 2>&1; then
+  say "Updating the existing container app to $IMAGE"
+  az containerapp update -n "$APP" -g "$RG" \
+    --image "$IMAGE" \
+    --set-env-vars "${ENV_ARGS[@]}" \
+    --only-show-errors -o none
+else
+  say "Creating the container app from $IMAGE"
+  az containerapp create \
+    -n "$APP" -g "$RG" \
+    --environment "$ENVNAME" \
+    --image "$IMAGE" \
+    --target-port "$PORT_TARGET" \
+    --ingress external \
+    --min-replicas 0 --max-replicas 3 \
+    --env-vars "${ENV_ARGS[@]}" \
+    --only-show-errors -o none
+fi
 
 ok "deployed"
 

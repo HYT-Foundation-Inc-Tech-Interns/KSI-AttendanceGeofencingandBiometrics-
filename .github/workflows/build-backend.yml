@@ -1,0 +1,64 @@
+name: Build backend image
+
+# Azure for Students blocks ACR Tasks ("TasksOperationsNotAllowed"), which is
+# the mechanism `az containerapp up --source` uses to build an image in the
+# cloud. This machine also has no Docker, so a local build is not an option.
+#
+# GitHub Actions fills both gaps: it builds the image on a free runner and
+# pushes it to ghcr.io. Because this repository is public, the push
+# authenticates with the automatic GITHUB_TOKEN -- no secret has to be created
+# or stored -- and the resulting image is publicly pullable, so Azure needs no
+# registry credential either.
+#
+# The tag this produces is what `az containerapp create --image` consumes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/build-backend.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ghcr.io rejects uppercase characters in a repository path, and this
+      # repository is `KSI-AttendanceGeofencingandBiometrics-`. Without this
+      # the push fails with "invalid reference format".
+      - name: Compute a lowercase image name
+        id: img
+        run: |
+          echo "name=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # The Dockerfile's COPY paths are relative to backend/, so the
+          # context must be backend/ and not the repository root.
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:latest
+            ${{ steps.img.outputs.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
