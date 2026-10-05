@@ -1,3 +1,9 @@
+> **⚠️ SUPERSEDED — the Render path in this document does not work.**
+> Render requires a credit card even for its free plan (confirmed firsthand on
+> final submit). **Use [`DEPLOY-AZURE.md`](./DEPLOY-AZURE.md) instead.**
+> The parts that are still useful: the diagnosis of why a quick tunnel cannot
+> be permanent, the full list of environment variables, and the CORS notes.
+
 # Permanent deployment: Render + Cloudflare Pages
 
 This replaces the Cloudflare **quick tunnel** the app has been running behind.

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Klassic Field Attendance System — Cost &amp; Billing Plan</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --panel-2:#f0f2f5; --ink:#14181f; --ink-2:#4b5563;
+    --ink-3:#6b7280; --line:#e3e6ea; --line-2:#d3d8de;
+    --accent:#1f5fd6; --accent-soft:#e8f0fe;
+    --good:#0f7a4a; --good-soft:#e6f5ec;
+    --warn:#a15c00; --warn-soft:#fdf3e3;
+    --bad:#b42318; --bad-soft:#fdecea;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1216; --panel:#171b21; --panel-2:#1e232a; --ink:#e8eaed; --ink-2:#b6bdc7;
+      --ink-3:#8b939e; --line:#2a3038; --line-2:#39414b;
+      --accent:#6ea8fe; --accent-soft:#16233a;
+      --good:#5dd39e; --good-soft:#12261d;
+      --warn:#e0a55c; --warn-soft:#2a2113;
+      --bad:#f28b82; --bad-soft:#2c1614;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  header.top{border-bottom:2px solid var(--line-2);padding-bottom:22px;margin-bottom:34px}
+  .kicker{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+  h1{font-size:31px;line-height:1.2;margin:0 0 10px;letter-spacing:-.02em}
+  .sub{color:var(--ink-2);font-size:14px;margin:0}
+  .meta{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--ink-2)}
+  h2{font-size:20px;margin:44px 0 6px;letter-spacing:-.01em}
+  h2 .n{color:var(--ink-3);font-weight:600;font-size:15px;margin-right:9px}
+  h3{font-size:15px;margin:26px 0 8px;color:var(--ink)}
+  p{margin:10px 0;color:var(--ink-2)}
+  p strong,li strong{color:var(--ink)}
+  ul{margin:10px 0;padding-left:20px;color:var(--ink-2)}
+  li{margin:5px 0}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .hero{
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:26px 28px;margin:26px 0 0;
+  }
+  .hero .big{font-size:44px;font-weight:750;letter-spacing:-.03em;line-height:1;color:var(--good)}
+  .hero .big small{font-size:16px;font-weight:600;color:var(--ink-3);letter-spacing:0;margin-left:6px}
+  .hero p{margin:12px 0 0;font-size:14px}
+
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)}
+  th{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-3);font-weight:700;background:var(--panel-2)}
+  thead th:first-child{border-top-left-radius:8px}
+  thead th:last-child{border-top-right-radius:8px}
+  tbody tr:hover{background:var(--panel-2)}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13px}
+  .tbl-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:18px 0}
+  .tbl-card table{margin:0}
+  .tbl-card .cap{padding:12px 14px;font-size:12.5px;color:var(--ink-3);border-bottom:1px solid var(--line);background:var(--panel)}
+  .tbl-card tbody tr:last-child td{border-bottom:none}
+  tr.total td{font-weight:750;background:var(--panel-2);color:var(--ink);border-top:2px solid var(--line-2)}
+  tr.total:hover td{background:var(--panel-2)}
+  .zero{color:var(--good);font-weight:700}
+  .cost{color:var(--warn);font-weight:700}
+
+  .callout{border-radius:10px;padding:14px 16px;margin:18px 0;font-size:14px;border:1px solid}
+  .callout .t{font-weight:700;margin-bottom:4px;display:block}
+  .callout p{margin:4px 0}
+  .c-good{background:var(--good-soft);border-color:color-mix(in srgb,var(--good) 35%,transparent)}
+  .c-good .t{color:var(--good)}
+  .c-warn{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+  .c-warn .t{color:var(--warn)}
+  .c-bad{background:var(--bad-soft);border-color:color-mix(in srgb,var(--bad) 35%,transparent)}
+  .c-bad .t{color:var(--bad)}
+  .c-info{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+  .c-info .t{color:var(--accent)}
+
+  code{font-family:var(--mono);font-size:12.5px;background:var(--panel-2);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--ink)}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--ink-2);margin:14px 0}
+  pre code{background:none;border:none;padding:0}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+  @media (max-width:720px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .card h4{margin:0 0 4px;font-size:14px}
+  .card .price{font-family:var(--mono);font-size:22px;font-weight:700;margin:6px 0 8px}
+  .card .price.free{color:var(--good)}
+  .card ul{padding-left:17px;margin:6px 0 0;font-size:13px}
+  .card .tag{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+
+  footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink-3)}
+  .src{font-size:12.5px;color:var(--ink-3)}
+  .src li{margin:4px 0}
+  @media print{
+    body{background:#fff;color:#000}
+    .wrap{max-width:none;padding:0}
+    .tbl-card,.card,.hero{break-inside:avoid}
+    h2{break-after:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <p class="kicker">HYT Foundation &middot; Klassic Field Attendance System</p>
+  <h1>Cost &amp; Billing Plan</h1>
+  <p class="sub">What the system costs to run today, what it costs as it scales, and what each optional real-time API adds.</p>
+  <div class="meta">
+    <span class="chip">Prepared 5 October 2026</span>
+    <span class="chip">All figures USD</span>
+    <span class="chip">Prices verified from vendor pricing pages</span>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="big">$0 <small>/ month</small></div>
+  <p><strong>Current run cost.</strong> The stack as designed &mdash; Azure Container Apps (scaled to zero), Supabase Free, Cloudflare Pages, OpenStreetMap tiles, and in-process face matching &mdash; sits entirely inside free tiers and free monthly grants. No credit card is required for any component.</p>
+</div>
+
+<h2><span class="n">01</span>Component-by-component cost</h2>
+<p>Every moving part of the system, its host, the tier it runs on, and what that tier actually costs.</p>
+
+<div class="tbl-card">
+  <div class="cap">Table 1 &mdash; Monthly cost by component, as currently designed</div>
+  <table>
+    <thead>
+      <tr><th>Component</th><th>Where it runs</th><th>Tier</th><th class="num">Cost / month</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>API backend</strong><br><span style="color:var(--ink-3);font-size:12.5px">NestJS, Docker, 21 routes</span></td>
+        <td>Azure Container Apps</td>
+        <td>Consumption, <code>minReplicas: 0</code></td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Container registry</strong></td>
+        <td>Azure Container Registry <em>or</em> ghcr.io</td>
+        <td>100&nbsp;GB free (12&nbsp;mo) / free public</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Database + auth</strong><br><span style="color:var(--ink-3);font-size:12.5px">Postgres, 10 employees, 2 sites</span></td>
+        <td>Supabase</td>
+        <td>Free</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Dashboard</strong><br><span style="color:var(--ink-3);font-size:12.5px">Next.js static export, 11&nbsp;MB</span></td>
+        <td>Cloudflare Pages</td>
+        <td>Free (commercial use allowed)</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Map tiles</strong></td>
+        <td>OpenStreetMap</td>
+        <td>Free, attribution required</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Face verification</strong><br><span style="color:var(--ink-3);font-size:12.5px">Descriptor matching</span></td>
+        <td>Inside the backend process</td>
+        <td>No external API</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Geofence distance</strong><br><span style="color:var(--ink-3);font-size:12.5px">Haversine radius check</span></td>
+        <td>Inside the backend process</td>
+        <td>No external API</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>Email notifications</strong></td>
+        <td>Brevo (or Gmail SMTP)</td>
+        <td>Free &mdash; 9,000 / month</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr>
+        <td><strong>TLS certificates</strong></td>
+        <td>Azure / Cloudflare</td>
+        <td>Automatic, included</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+      <tr class="total">
+        <td colspan="3">Total, current design</td>
+        <td class="num zero">$0.00</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout c-info">
+  <span class="t">The key structural point</span>
+  <p>The two workloads that normally dominate a biometric attendance bill &mdash; <strong>face matching</strong> and <strong>map rendering</strong> &mdash; both run locally at zero marginal cost. Face descriptors are compared in-process, and tiles are served by OpenStreetMap. There is no per-check-in API meter running today.</p>
+</div>
+
+<h2><span class="n">02</span>Why the backend is free &mdash; the Azure grant</h2>
+<p>The backend is a long-running Docker container, which is normally the hardest thing to host for free. Azure Container Apps on the Consumption plan gives every subscription a monthly free grant, and it resets on the 1st of each month.</p>
+
+<div class="grid">
+  <div class="card">
+    <span class="tag">Free every month, per subscription</span>
+    <div class="price free">180,000</div>
+    <strong>vCPU-seconds</strong>
+    <ul><li>Equals 50 vCPU-hours</li></ul>
+  </div>
+  <div class="card">
+    <span class="tag">Free every month, per subscription</span>
+    <div class="price free">360,000</div>
+    <strong>GiB-seconds</strong>
+    <ul><li>Equals 100 GiB-hours</li></ul>
+  </div>
+  <div class="card">
+    <span class="tag">Free every month, per subscription</span>
+    <div class="price free">2,000,000</div>
+    <strong>HTTP requests</strong>
+    <ul><li>Health-probe requests are not counted</li></ul>
+  </div>
+  <div class="card">
+    <span class="tag">Scaling behaviour</span>
+    <div class="price free">$0.00</div>
+    <strong>While idle</strong>
+    <ul><li>Scaled to zero replicas &rarr; no resource charge</li></ul>
+  </div>
+</div>
+
+<p>With <code>minReplicas: 0</code>, the container is only billed for the seconds it is actually serving. Between check-ins the app scales to zero and the meter stops. That is what makes an intermittent field-attendance workload a good fit: a system used twice a day costs almost nothing in compute, because it is asleep the other 23 hours.</p>
+
+<h3>Overage rates, if the free grant is ever exceeded</h3>
+<div class="tbl-card">
+  <div class="cap">Table 2 &mdash; Azure Container Apps Consumption rates (East US, published list price)</div>
+  <table>
+    <thead><tr><th>Meter</th><th class="num">Rate</th><th class="num">Per hour</th></tr></thead>
+    <tbody>
+      <tr><td>vCPU &mdash; active (serving a request)</td><td class="num">$0.000024 / vCPU-sec</td><td class="num">$0.0864</td></tr>
+      <tr><td>vCPU &mdash; idle (warm, no traffic)</td><td class="num">$0.000003 / vCPU-sec</td><td class="num">$0.0108</td></tr>
+      <tr><td>Memory &mdash; active</td><td class="num">$0.000003 / GiB-sec</td><td class="num">$0.0108</td></tr>
+      <tr><td>Memory &mdash; idle</td><td class="num">$0.000003 / GiB-sec</td><td class="num">$0.0108</td></tr>
+      <tr><td>HTTP requests</td><td class="num">$0.40 / million</td><td class="num">&mdash;</td></tr>
+      <tr><td>Data egress (first 100 GB/month free)</td><td class="num">~$0.087 / GB</td><td class="num">&mdash;</td></tr>
+    </tbody>
+  </table>
+</div>
+<p style="font-size:13px">Note that billing is on the vCPU and memory <em>allocated</em> to a replica, not what it consumes. Keeping the replica small (0.5 vCPU / 1 GiB) is what keeps the numbers low.</p>
+
+<div class="callout c-good">
+  <span class="t">Azure for Students covers the rest</span>
+  <p>Azure for Students provides <strong>$100 in credit, valid 12 months and renewable annually while still enrolled</strong>, plus 65+ always-free services. It is stated on Microsoft's own pages to require <strong>no credit card</strong>. The credit is a backstop for anything above the free grant &mdash; at the volumes in this plan it is unlikely to be touched at all.</p>
+</div>
+
+<h2><span class="n">03</span>What it costs as it scales</h2>
+<p>Compute is driven by how many seconds the container is actually awake. The model below assumes <strong>0.5 vCPU and 1 GiB per replica</strong>, <strong>40 seconds of active replica time per check-in</strong> (face upload, verification, geofence evaluation, record write, plus dashboard activity), and <strong>two check-ins per employee per working day</strong> across 22 working days.</p>
+
+<div class="tbl-card">
+  <div class="cap">Table 3 &mdash; Azure compute cost by workforce size, at 40 s active per check-in</div>
+  <table>
+    <thead>
+      <tr><th>Employees</th><th class="num">Check-ins / mo</th><th class="num">vCPU-sec</th><th class="num">GiB-sec</th><th class="num">Requests</th><th class="num">Azure cost</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>10</strong> &mdash; pilot</td><td class="num">440</td><td class="num">10,560</td><td class="num">21,120</td><td class="num">5,280</td><td class="num zero">$0.00</td></tr>
+      <tr><td><strong>50</strong></td><td class="num">2,200</td><td class="num">52,800</td><td class="num">105,600</td><td class="num">26,400</td><td class="num zero">$0.00</td></tr>
+      <tr><td><strong>100</strong></td><td class="num">4,400</td><td class="num">105,600</td><td class="num">211,200</td><td class="num">52,800</td><td class="num zero">$0.00</td></tr>
+      <tr><td><strong>250</strong></td><td class="num">11,000</td><td class="num">264,000</td><td class="num">528,000</td><td class="num">132,000</td><td class="num cost">$2.52</td></tr>
+      <tr><td><strong>500</strong></td><td class="num">22,000</td><td class="num">528,000</td><td class="num">1,056,000</td><td class="num">264,000</td><td class="num cost">$10.44</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>Two things worth reading off this table:</p>
+<ul>
+  <li><strong>Up to roughly 170 employees the compute bill is genuinely $0.</strong> At 100 employees the system uses about 59% of the free vCPU grant, so there is real headroom before anything is charged.</li>
+  <li><strong>Requests never become a cost driver here.</strong> Even at 500 employees the system uses about 13% of the 2&nbsp;million free requests. The free grant would not be exhausted until roughly <strong>3,800 employees</strong> &mdash; more than 7&times; the current compute ceiling, so compute will always run out first.</li>
+</ul>
+
+<div class="callout c-warn">
+  <span class="t">Sensitivity to the 40-second assumption</span>
+  <p>That figure is the single lever that moves the compute number. If a check-in completes in <strong>15 seconds</strong> instead of 40 &mdash; a warm replica, a smaller photo payload, a tighter verification path &mdash; divide the 250- and 500-employee rows by about <strong>2.7</strong>. The 250-employee case drops to under a dollar a month; the 500-employee case to about <strong>$3.90</strong>.</p>
+</div>
+
+<h3>The other tiers, at scale</h3>
+<div class="tbl-card">
+  <div class="cap">Table 4 &mdash; Free-tier ceilings and the first paid step</div>
+  <table>
+    <thead><tr><th>Service</th><th>Free allowance</th><th>First paid step</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Supabase</strong></td><td>500 MB database, 1 GB file storage, 5 GB egress, 50,000 monthly active users, 2 projects</td><td>Pro, <strong>$25 / month per project</strong> &mdash; 8 GB database, 250 GB egress, removes the inactivity pause</td></tr>
+      <tr><td><strong>Cloudflare Pages</strong></td><td>Unlimited requests, unlimited bandwidth for static sites</td><td>Not required for a static export</td></tr>
+      <tr><td><strong>Brevo (email)</strong></td><td>9,000 emails / month, 300 / day</td><td>Paid plans start around $25 / month</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>Attendance records are small &mdash; a few hundred bytes each. At 500 employees the database grows by roughly <strong>5 MB per month</strong>, so the 500 MB Supabase ceiling is a multi-year horizon on records alone. The limit that arrives first is <strong>file storage</strong> (1 GB) if check-in photos are retained.</p>
+
+<div class="callout c-warn">
+  <span class="t">The real Supabase constraint is not size &mdash; it is the pause</span>
+  <p>Supabase pauses a free project after <strong>7 days without a database request</strong>. A paused project is unavailable until someone logs into the dashboard and unpauses it manually. For a system used on working days this is mostly a weekend-plus-holiday risk, but a long break would take the app offline. The standard fix is a scheduled keep-alive ping (a GitHub Actions workflow or an uptime monitor), which costs nothing. <strong>Pro at $25/month removes the pause entirely</strong> and is the right upgrade the moment real staff depend on the system.</p>
+</div>
+
+<h2><span class="n">04</span>Optional real-time APIs, priced</h2>
+<p>The system does not currently call any paid API. These are the upgrades that would change that, priced at realistic volumes.</p>
+
+<h3>Face verification &mdash; cloud matching</h3>
+<p>The app matches faces in-process, which is free. Switching to a managed service buys better tolerance to lighting and angle, at a per-image cost.</p>
+<div class="tbl-card">
+  <div class="cap">AWS Rekognition CompareFaces &mdash; $1.00 per 1,000 images (first 1M tier). First 1,000 images/month free for 12 months.</div>
+  <table>
+    <thead><tr><th>Volume</th><th class="num">Images / mo</th><th class="num">Year 1</th><th class="num">Year 2 onward</th></tr></thead>
+    <tbody>
+      <tr><td>10 employees</td><td class="num">440</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td></tr>
+      <tr><td>100 employees</td><td class="num">4,400</td><td class="num cost">$3.40</td><td class="num cost">$4.40</td></tr>
+      <tr><td>500 employees</td><td class="num">22,000</td><td class="num cost">$21.00</td><td class="num cost">$21.00</td></tr>
+    </tbody>
+  </table>
+</div>
+<p><strong>Verdict:</strong> affordable, but only worth it if the local matcher is failing in the field. At pilot scale it is free either way.</p>
+
+<h3>Maps and geocoding</h3>
+<p>Google removed the flat $200 monthly credit on <strong>1 March 2025</strong>. It was replaced by a free allowance <em>per individual SKU</em>, which does not roll over.</p>
+<div class="tbl-card">
+  <div class="cap">Google Maps Platform &mdash; free calls per SKU per month, after the March 2025 restructure</div>
+  <table>
+    <thead><tr><th>Category</th><th>SKUs</th><th class="num">Free / SKU / mo</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Essentials</strong></td><td>Maps JavaScript API, Geocoding, Autocomplete, Static Maps</td><td class="num">10,000</td></tr>
+      <tr><td><strong>Essentials</strong> &mdash; Map Tiles API</td><td>Tiles</td><td class="num">100,000</td></tr>
+      <tr><td><strong>Pro</strong></td><td>Places Details, Text Search, Address Validation, Routes Advanced</td><td class="num">5,000</td></tr>
+      <tr><td><strong>Enterprise</strong></td><td>Places Insights, Premium SKUs</td><td class="num">1,000</td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Geocoding pay-as-you-go runs <strong>$5.00 per 1,000</strong> for the first 100K calls, dropping to $4.00, then $3.00 at higher tiers. Billing addresses in India receive a <strong>7&times; free allowance</strong> (70,000 Essentials calls per SKU). Google also sells flat subscriptions from <strong>$100/month</strong> (Starter, 50,000 combined calls).</p>
+<p><strong>Verdict:</strong> the app already renders OpenStreetMap tiles at no cost. Swapping to Google Maps would be <strong>$0 up to 10,000 map loads</strong> (about 100 employees), then roughly <strong>$60/month at 500 employees</strong>. There is no functional reason to make that swap &mdash; it is a styling decision, not a capability one.</p>
+
+<h3>Routing and travel time</h3>
+<p>Geofencing already uses in-process Haversine distance, so no routing API is needed for the core check-in flow. A routing API would only be relevant for ETA or travel-time features, which the system does not have.</p>
+<div class="tbl-card">
+  <div class="cap">Google Routes API (Pro category) &mdash; 5,000 free calls/SKU/month, then roughly $5 per 1,000</div>
+  <table>
+    <thead><tr><th>Volume</th><th class="num">Calls / mo</th><th class="num">Cost</th></tr></thead>
+    <tbody>
+      <tr><td>100 employees</td><td class="num">4,400</td><td class="num zero">$0.00</td></tr>
+      <tr><td>500 employees</td><td class="num">22,000</td><td class="num cost">~$85.00</td></tr>
+    </tbody>
+  </table>
+</div>
+<p><strong>Verdict:</strong> this is the most expensive upgrade on the list and the least necessary. Avoid it unless a specific feature demands it.</p>
+
+<h3>Notifications</h3>
+<div class="tbl-card">
+  <div class="cap">Email and SMS options, at 4,400 notifications/month (100 employees)</div>
+  <table>
+    <thead><tr><th>Channel</th><th>Provider</th><th>Free allowance</th><th class="num">Cost / mo</th></tr></thead>
+    <tbody>
+      <tr><td>Email</td><td><strong>Brevo</strong></td><td>9,000 / mo (300 / day)</td><td class="num zero">$0.00</td></tr>
+      <tr><td>Email</td><td>Gmail SMTP</td><td>Free, works on Azure</td><td class="num zero">$0.00</td></tr>
+      <tr><td>Email</td><td>Resend</td><td>3,000 / mo</td><td class="num cost">~$20.00</td></tr>
+      <tr><td>Email</td><td>AWS SES</td><td>No free tier</td><td class="num cost">$0.44</td></tr>
+      <tr><td>SMS</td><td>Semaphore (PH)</td><td>None</td><td class="num cost">~$58.00</td></tr>
+      <tr><td>SMS</td><td>Twilio (PH)</td><td>None</td><td class="num cost">~$264.00</td></tr>
+    </tbody>
+  </table>
+</div>
+<p><strong>Verdict:</strong> email is effectively free at this scale. <strong>SMS is the one channel that can quietly dominate the bill</strong> &mdash; a per-message SMS alert to every employee is 10&ndash;60&times; the cost of the entire compute bill. Prefer email or in-app notifications.</p>
+
+<h3>Live dashboard updates</h3>
+<p>Supabase Realtime is included on the free plan: <strong>2 million messages/month and 200 peak concurrent connections</strong>. Pushing live check-in events to an admin dashboard costs nothing at this scale.</p>
+
+<h2><span class="n">05</span>Grand totals &mdash; three scenarios</h2>
+
+<div class="tbl-card">
+  <div class="cap">Table 5 &mdash; Total monthly cost under three different build-outs</div>
+  <table>
+    <thead><tr><th>Line item</th><th class="num">As built<br><span style="font-weight:400;text-transform:none;letter-spacing:0">10 employees</span></th><th class="num">Real-time<br><span style="font-weight:400;text-transform:none;letter-spacing:0">100 employees</span></th><th class="num">Everything Google + AWS<br><span style="font-weight:400;text-transform:none;letter-spacing:0">500 employees</span></th></tr></thead>
+    <tbody>
+      <tr><td>Azure compute</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num cost">$10.44</td></tr>
+      <tr><td>Container registry</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td></tr>
+      <tr><td>Supabase</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num cost">$25.00</td></tr>
+      <tr><td>Dashboard hosting</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td></tr>
+      <tr><td>Map tiles</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num cost">$60.00</td></tr>
+      <tr><td>Routing API</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num cost">$85.00</td></tr>
+      <tr><td>Face verification</td><td class="num zero">$0.00</td><td class="num cost">$3.40</td><td class="num cost">$21.00</td></tr>
+      <tr><td>Email</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td><td class="num zero">$0.00</td></tr>
+      <tr class="total"><td>Total per month</td><td class="num zero">$0.00</td><td class="num cost">$3.40</td><td class="num cost">$201.44</td></tr>
+      <tr class="total"><td>Total per year</td><td class="num zero">$0.00</td><td class="num cost">$40.80</td><td class="num cost">$2,417.28</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout c-good">
+  <span class="t">The recommendation</span>
+  <p>Stay on the third column's architecture but not its vendors. <strong>Keep OpenStreetMap and in-process face matching</strong> and the 500-employee bill falls from $201.44 to <strong>about $35.44/month</strong> &mdash; that is Azure compute plus Supabase Pro for reliability, and nothing else. The <strong>$166/month</strong> difference between the two 500-employee columns buys no capability the system does not already have.</p>
+</div>
+
+<h2><span class="n">06</span>One-time and incidental costs</h2>
+<ul>
+  <li><strong>Custom domain</strong> &mdash; optional, roughly <strong>$10&ndash;15 per year</strong> for a <code>.ph</code> or <code>.com</code>. Everything else works on the free host subdomain.</li>
+  <li><strong>Azure for Students credit</strong> &mdash; $100, renewable annually while enrolled. No card required.</li>
+  <li><strong>Development and hosting of the pilot</strong> &mdash; $0. The stack runs today on free tiers.</li>
+</ul>
+
+<h2><span class="n">07</span>What would actually trigger a bill</h2>
+<p>In order of likelihood, these are the events that move the cost off zero:</p>
+<ol>
+  <li><strong>Relying on the system for real payroll.</strong> This is the trigger for Supabase Pro at $25/month, not a technical limit &mdash; it is the purchase of "the database will never pause and will be backed up daily".</li>
+  <li><strong>Growing past roughly 170 employees</strong> on the current compute allocation. This is a soft ceiling, raised by shrinking the replica or shortening the per-check-in work.</li>
+  <li><strong>Adding a managed face-matching API.</strong> $3.40/month at 100 employees, $21/month at 500.</li>
+  <li><strong>Adding SMS notifications.</strong> The single most expensive per-unit choice available &mdash; $58&ndash;264/month at 100 employees.</li>
+  <li><strong>Retaining check-in photos.</strong> Supabase file storage is capped at 1 GB on the free plan, and this is the ceiling reached first. Offloading photos elsewhere or expiring them on a schedule keeps this at zero.</li>
+</ol>
+
+<h2><span class="n">08</span>Required fixes before any deployment</h2>
+<p>These are not billing items, but they are prerequisites for the cost plan above to hold. All three are open right now.</p>
+
+<div class="callout c-bad">
+  <span class="t">1. The database URL is IPv6-only and will fail on most hosts</span>
+  <p><code>DATABASE_URL</code> points at <code>db.fwmjwjgeajwpnmxeqbyv.supabase.co</code>, which has <strong>no IPv4 address at all</strong> &mdash; verified by DNS lookup. It works on this development machine only because it has IPv6. Any IPv4-only host (Vercel functions, many container networks) cannot connect, and the failure appears as a generic connection timeout rather than a clear DNS error. The fix is to repoint to the Supabase pooler, which does have IPv4 &mdash; the working endpoint was confirmed by an actual connection test:</p>
+  <pre><code>DATABASE_URL=postgresql://postgres.fwmjwjgeajwpnmxeqbyv:[PASSWORD]@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres</code></pre>
+  <p>Note the username must carry the project reference (<code>postgres.&lt;ref&gt;</code>), not a bare <code>postgres</code>.</p>
+</div>
+
+<div class="callout c-warn">
+  <span class="t">2. The database connection timeout is too aggressive for a remote host</span>
+  <p><code>backend/src/config/database.config.ts</code> sets <code>connectionTimeoutMillis: 2000</code>. Two seconds is fine on a warm local link (the measured handshake was ~511&nbsp;ms) but marginal from a remote region, where a cold connect plus TLS handshake can exceed it. This is the most likely cause of the intermittent <code>Connection terminated due to connection timeout</code> errors seen on login. <strong>Raise it to 10000.</strong></p>
+</div>
+
+<div class="callout c-warn">
+  <span class="t">3. The Vercel rewrite still points at a tunnel</span>
+  <p><code>dashboard/vercel.json</code> proxies <code>/v1/*</code> to a temporary <code>trycloudflare.com</code> tunnel that will expire. Once the backend has a permanent Azure URL, that destination must be updated, and <code>APP_CHECKIN_URL</code> in the backend environment must point at the final dashboard URL.</p>
+</div>
+
+<h2><span class="n">09</span>Sources</h2>
+<ul class="src">
+  <li>Azure Container Apps free grant and consumption billing &mdash; Microsoft Learn, <em>Billing in Azure Container Apps</em>; Azure pricing page</li>
+  <li>Consumption rates (vCPU, memory, requests, egress) &mdash; Azure Retail Prices API, East US, USD</li>
+  <li>Azure for Students eligibility, $100 credit, no credit card &mdash; Microsoft Azure for Students pages</li>
+  <li>Supabase free plan limits, inactivity pause, Pro pricing &mdash; Supabase pricing and billing documentation</li>
+  <li>Google Maps Platform per-SKU free allowances and March 2025 pricing change &mdash; Google Maps Platform pricing and the March 2025 announcement</li>
+  <li>AWS Rekognition CompareFaces pricing &mdash; AWS Rekognition pricing page</li>
+  <li>Email and SMS provider free tiers &mdash; Brevo, Resend, AWS SES, Twilio, Semaphore pricing pages</li>
+</ul>
+
+<footer>
+  <p>Klassic Field Attendance System &mdash; cost and billing plan. Figures are published list prices in USD, gathered 5 October 2026, and exclude taxes. Vendor pricing changes; re-verify before committing to a budget.</p>
+</footer>
+
+</div>
+</body>
+</html>

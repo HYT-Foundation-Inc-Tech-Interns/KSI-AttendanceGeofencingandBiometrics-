@@ -1,3 +1,10 @@
+> **⚠️ SUPERSEDED — the Render path in this document does not work.**
+> Render requires a credit card even for its free plan (confirmed firsthand on
+> final submit), so no step below can be completed without one.
+> **Use [`DEPLOY-AZURE.md`](./DEPLOY-AZURE.md) instead** — Azure Container Apps
+> + Cloudflare Pages, genuinely free and card-free. The free-tier constraints
+> and the verification notes further down are still accurate and worth reading.
+
 # Deploying on free tiers only
 
 Target cost: **$0/month**. This documents the exact path from this repository to
